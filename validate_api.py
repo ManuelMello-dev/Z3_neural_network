@@ -28,11 +28,13 @@ assert api.json().get("interface") == "/interface"
 assert api.json().get("world_model") == "/world-model"
 assert api.json().get("memory") == "/memory"
 assert api.json().get("runtime") == "/runtime"
+assert api.json().get("cern") == "/cern"
 
 interface = client.get("/interface")
 assert interface.status_code == 200, interface.text
 assert "Integrated Observe" in interface.text
 assert "Autonomous Runtime" in interface.text
+assert "CERN Collision Stream" in interface.text
 
 health = client.get("/health")
 assert health.status_code == 200, health.text
@@ -77,6 +79,9 @@ state = client.get("/state")
 assert state.status_code == 200, state.text
 runtime = client.get("/runtime")
 assert runtime.status_code == 200, runtime.text
+cern = client.get("/cern")
+assert cern.status_code == 200, cern.text
+assert cern.json().get("dataset", {}).get("domain") == "cern:cms:dielectron"
 assert "running" in runtime.json()
 runtime_tick = client.post("/runtime/tick")
 assert runtime_tick.status_code == 200, runtime_tick.text

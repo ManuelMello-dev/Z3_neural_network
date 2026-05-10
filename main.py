@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
+from cern_stream import CERNCollisionStream
 from resonant_memory import ResonantMemoryGeometry
 from runtime_loop import AutonomousRuntimeLoop, RuntimeLoopConfig
 from state_store import StateStore
@@ -41,6 +42,7 @@ app = FastAPI(
 _MODEL = None
 _WORLD_MODEL = OnlineWorldModel(feature_dim=64, latent_dim=8)
 _MEMORY = ResonantMemoryGeometry(max_rings=256, resonance_horizon=72)
+_CERN_STREAM = CERNCollisionStream()
 _STATE_STORE = StateStore()
 _STATE_LOADED = False
 _RUNTIME_LOCK = threading.Lock()
@@ -91,6 +93,15 @@ class RuntimeStartRequest(BaseModel):
     autosave_every_ticks: int = Field(5, ge=1, le=1000, description="Save state every N ticks.")
 
 
+class CERNBatchRequest(BaseModel):
+    """Request payload for CERN collision fetch and ingest operations."""
+
+    batch_size: int = Field(5, ge=1, le=250, description="Number of CERN collision events to fetch or ingest.")
+    train: bool = Field(False, description="Train Z³ on each ingested collision event instead of runtime stepping only.")
+    persist: bool = Field(True, description="Save runtime state after ingestion.")
+    learning_rate: float = Field(1e-3, gt=0.0, le=1.0, description="Learning rate when train=true.")
+
+
 def _render_interface() -> str:
     interface_path = os.path.join(os.path.dirname(__file__), "interface.html")
     with open(interface_path, "r", encoding="utf-8") as handle:
@@ -110,6 +121,7 @@ def _status_payload() -> Dict[str, Any]:
         "memory": "/memory",
         "state": "/state",
         "runtime": "/runtime",
+        "cern": "/cern",
     }
 
 
@@ -330,6 +342,49 @@ def train_step(request: TrainStepRequest) -> Dict[str, Any]:
     if manifest:
         response["state_manifest"] = manifest
     return response
+
+
+@app.get("/cern")
+def cern_status() -> Dict[str, Any]:
+    """Return CERN stream status without forcing a dataset download."""
+    return _CERN_STREAM.status()
+
+
+@app.post("/cern/load")
+def cern_load() -> Dict[str, Any]:
+    """Download/cache and load the CERN Open Data dielectron CSV."""
+    return _CERN_STREAM.ensure_loaded(download=True)
+
+
+@app.post("/cern/fetch")
+def cern_fetch(request: CERNBatchRequest) -> Dict[str, Any]:
+    """Fetch converted CERN collision observations without ingesting them."""
+    return _CERN_STREAM.fetch_batch(batch_size=request.batch_size)
+
+
+@app.post("/cern/ingest")
+def cern_ingest(request: CERNBatchRequest) -> Dict[str, Any]:
+    """Fetch CERN collision observations and feed them through the integrated Z³ observe path."""
+    batch = _CERN_STREAM.fetch_batch(batch_size=request.batch_size)
+    results = []
+    for observation in batch.get("observations", []):
+        integrated = IntegratedObserveRequest(
+            observation=observation,
+            domain=batch.get("domain", CERNCollisionStream.DEFAULT_DOMAIN),
+            train=request.train,
+            persist=False,
+            learning_rate=request.learning_rate,
+        )
+        results.append(integrated_observe(integrated))
+    manifest = _persist_if_requested(request.persist)
+    return {
+        "dataset": batch.get("dataset"),
+        "domain": batch.get("domain"),
+        "count": len(results),
+        "offset": batch.get("offset"),
+        "results": results,
+        "state_manifest": manifest,
+    }
 
 
 @app.get("/world-model")

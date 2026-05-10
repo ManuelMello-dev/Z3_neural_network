@@ -241,3 +241,35 @@ The autonomous loop can also be tuned with environment variables:
 | `Z3_RUNTIME_LR` | `0.001` | Learning rate used by autonomous heartbeat training. |
 
 This is the first step from a manual endpoint demo toward a continuously pulsing, memory-bearing runtime. The loop does not replace external observations; it keeps the system alive between observations by training on its own heartbeat state and preserving continuity through autosave.
+
+## CERN Open Data Training Stream
+
+The runtime can now use the same CERN-first proving stream from Cognitive Mesh, adapted as a standalone synchronous data source. The stream uses CERN Open Data record 304, `Events with two electrons from 2010`, DOI `10.7483/OPENDATA.CMS.PCSW.AHVG`, and converts CMS dielectron rows into generic Z³ observations.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/cern` | `GET` | Show CERN dataset/cache status without forcing a download. |
+| `/cern/load` | `POST` | Download/cache and load the CERN dielectron CSV. |
+| `/cern/fetch` | `POST` | Fetch a converted batch of CERN observations without ingesting them. |
+| `/cern/ingest` | `POST` | Fetch a batch and feed each collision event through world model, resonant memory, and Z³. |
+
+Example:
+
+```bash
+curl -X POST "$RAILWAY_PUBLIC_DOMAIN/cern/ingest" \
+  -H "Content-Type: application/json" \
+  -d '{"batch_size":5,"train":false,"persist":true}'
+```
+
+The CERN stream can be configured with these environment variables:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CERN_COLLISION_DATA_URL` | CERN record 304 dielectron CSV | Source CSV URL. |
+| `CERN_COLLISION_CACHE` | `$Z3_STATE_DIR/cern_dielectron.csv` or `data/cern_dielectron.csv` | Local cache path. |
+| `CERN_COLLISION_BATCH_SIZE` | `25` | Default fetch/ingest batch size. |
+| `CERN_COLLISION_MAX_EVENTS` | `100000` | Maximum rows loaded from the CSV. |
+| `CERN_COLLISION_PRIMARY_VALUE` | `M` | Primary observable, default invariant mass. |
+| `CERN_COLLISION_SECONDARY_VALUE` | `pt1` | Secondary observable, default first electron transverse momentum. |
+
+This gives Z³ a real, structured, non-toy stream: invariant mass, particle energy, transverse momentum, pseudorapidity, azimuthal phase, charge, run/event IDs, and collision metadata. Ingested events become world-model latents, resonant memory rings, and neural Z³ training/runtime vectors.
