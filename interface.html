@@ -19,6 +19,7 @@
     <div class="metric"><span>Torch</span><strong id="torch-status">checking</strong></div>
     <div class="metric"><span>Input Dim</span><strong id="input-dim">16</strong></div>
     <div class="metric"><span>Memory Rings</span><strong id="memory-rings">0</strong></div>
+    <div class="metric"><span>Runtime</span><strong id="runtime-status">stopped</strong></div>
   </div>
 
   <div class="grid">
@@ -26,6 +27,8 @@
     <section class="card"><h2>Health <span class="method">GET /health</span></h2><div class="body"><p class="help">Dependency, model-load, and state-store status.</p><button data-call="health">Call /health</button><pre id="health-output">Waiting.</pre></div></section>
     <section class="card"><h2>Config <span class="method">GET /config</span></h2><div class="body"><p class="help">Z³ config plus world-model and memory summaries.</p><button data-call="config">Call /config</button><pre id="config-output">Waiting.</pre></div></section>
     <section class="card"><h2>Docs <span class="method">GET /docs</span></h2><div class="body"><p class="help">FastAPI schema and interactive docs.</p><a class="btn secondary" href="/docs" target="_blank">Open /docs</a><a class="btn secondary" href="/openapi.json" target="_blank">Open schema</a><pre>Docs open in a new tab.</pre></div></section>
+
+    <section class="card wide"><h2>Autonomous Runtime <span class="method">GET/POST /runtime</span></h2><div class="body"><p class="help">Starts, stops, and ticks the always-on learning loop. Each tick creates a heartbeat observation, updates world model and resonant memory, trains Z³ once, and autosaves on schedule.</p><div class="row"><div><label>Interval seconds</label><input id="runtime-interval" type="number" min="1" max="3600" step="1" value="30"></div><div><label>Autosave every N ticks</label><input id="runtime-autosave" type="number" min="1" max="1000" step="1" value="5"></div></div><button data-call="runtimeStatus">Status</button><button data-call="runtimeStart">Start</button><button class="secondary" data-call="runtimeStop">Stop</button><button class="secondary" data-call="runtimeTick">Tick once</button><pre id="runtime-output">Waiting.</pre></div></section>
 
     <section class="card wide"><h2>Integrated Observe <span class="method">POST /observe</span></h2><div class="body"><p class="help">Best path: observation → world latent → resonant memory → Z³ vector → runtime/train step.</p><label>Observation JSON</label><textarea id="observe-json">{"domain":"conversation","content":"first live observation","tone":0.25,"salience":0.7}</textarea><div class="row"><div><label>Domain</label><input id="observe-domain" value="conversation"></div><div><label>Train?</label><select id="observe-train"><option value="false">false</option><option value="true">true</option></select></div><div><label>Persist?</label><select id="observe-persist"><option value="true">true</option><option value="false">false</option></select></div><div><label>Learning rate</label><input id="observe-lr" type="number" step="0.0001" value="0.001"></div></div><button data-call="observe">Run /observe</button><button class="secondary" data-fill="sample-observe">Sample</button><pre id="observe-output">Waiting.</pre></div></section>
 
@@ -51,10 +54,14 @@ async function req(path,opt={}){const r=await fetch(path,{headers:{'Content-Type
 function parseJSON(id,blank=false){const raw=$(id).value.trim(); if(blank&&!raw)return null; return JSON.parse(raw)}
 function parseVector(id,blank=false){const v=parseJSON(id,blank); if(v===null)return null; if(!Array.isArray(v))throw new Error(id+' must be a JSON array'); return v.map(Number)}
 function rand(){return Array.from({length:inputDim},()=>Number((Math.random()*2-1).toFixed(4)))}
-function updateStatus(h){if(h.status)$('service-status').textContent=h.status; if('torch_available'in h)$('torch-status').textContent=h.torch_available?'available':'missing'}
+function updateStatus(h){if(h.status)$('service-status').textContent=h.status; if('torch_available'in h)$('torch-status').textContent=h.torch_available?'available':'missing'; if(h.runtime&&'running'in h.runtime)$('runtime-status').textContent=h.runtime.running?'running':'stopped'}
 function updateConfig(c){if(c.config&&c.config.input_dim){inputDim=c.config.input_dim; $('input-dim').textContent=inputDim} if(c.memory&&'rings'in c.memory)$('memory-rings').textContent=c.memory.rings}
 async function callApi(){out('api-output',await req('/api'))} async function callHealth(){const d=await req('/health'); updateStatus(d); out('health-output',d)} async function callConfig(){const d=await req('/config'); updateConfig(d); out('config-output',d); await callHealth()}
 async function callWorld(){out('world-output',await req('/world-model'))} async function callMemory(){const d=await req('/memory'); if(d.metrics&&'rings'in d.metrics)$('memory-rings').textContent=d.metrics.rings; out('memory-output',d)} async function callState(){out('state-output',await req('/state'))}
+async function callRuntimeStatus(){const d=await req('/runtime'); $('runtime-status').textContent=d.running?'running':'stopped'; out('runtime-output',d)}
+async function callRuntimeStart(){const d=await post('/runtime/start',{interval_seconds:Number($('runtime-interval').value||30),autosave_every_ticks:Number($('runtime-autosave').value||5)}); $('runtime-status').textContent=d.running?'running':'stopped'; out('runtime-output',d)}
+async function callRuntimeStop(){const d=await post('/runtime/stop',{}); $('runtime-status').textContent=d.running?'running':'stopped'; out('runtime-output',d)}
+async function callRuntimeTick(){const d=await post('/runtime/tick',{}); $('runtime-status').textContent=d.running?'running':'stopped'; out('runtime-output',d); await callConfig()}
 async function post(path,payload){return await req(path,{method:'POST',body:JSON.stringify(payload)})}
 async function callWorldObserve(){const d=await post('/world-model/observe',{observation:parseJSON('world-json'),domain:$('world-domain').value,persist:true}); out('world-observe-output',d); await callConfig()}
 async function callMemoryObserve(){const d=await post('/memory/observe',{observation:parseJSON('memory-json'),domain:$('memory-domain').value,persist:true}); out('memory-observe-output',d); await callConfig()}
@@ -62,10 +69,10 @@ async function callObserve(){const d=await post('/observe',{observation:parseJSO
 async function callStep(){const d=await post('/step',{x:parseVector('step-vector'),hard_gate:$('step-hard').value==='true',update_state:$('step-update').value==='true',persist:$('step-persist').value==='true'}); out('step-output',d); await callConfig()}
 async function callTrain(){const d=await post('/train-step',{x:parseVector('train-vector'),target:parseVector('target-vector',true),learning_rate:Number($('train-lr').value||.001),persist:$('train-persist').value==='true'}); out('train-output',d); await callConfig()}
 async function callSave(){out('state-action-output',await post('/state/save',{})); await callState()} async function callLoad(){out('state-action-output',await post('/state/load',{})); await callConfig(); await callState()}
-const calls={api:callApi,health:callHealth,config:callConfig,world:callWorld,memory:callMemory,state:callState,worldObserve:callWorldObserve,memoryObserve:callMemoryObserve,observe:callObserve,step:callStep,train:callTrain,saveState:callSave,loadState:callLoad};
+const calls={api:callApi,health:callHealth,config:callConfig,world:callWorld,memory:callMemory,state:callState,runtimeStatus:callRuntimeStatus,runtimeStart:callRuntimeStart,runtimeStop:callRuntimeStop,runtimeTick:callRuntimeTick,worldObserve:callWorldObserve,memoryObserve:callMemoryObserve,observe:callObserve,step:callStep,train:callTrain,saveState:callSave,loadState:callLoad};
 document.querySelectorAll('button[data-call]').forEach(b=>b.addEventListener('click',async()=>{b.disabled=true;try{await calls[b.dataset.call]()}catch(e){out((b.closest('.card').querySelector('pre')||{}).id||'api-output',e.data||e.message||String(e),true)}finally{b.disabled=false}}));
 document.querySelectorAll('button[data-fill]').forEach(b=>b.addEventListener('click',e=>{e.preventDefault(); if(b.dataset.fill==='random-step')$('step-vector').value=pretty(rand()); if(b.dataset.fill==='random-train')$('train-vector').value=pretty(rand()); if(b.dataset.fill==='sample-observe')$('observe-json').value=pretty({domain:'conversation',content:'Z3 live observation',tone:Number(Math.random().toFixed(3)),salience:Number(Math.random().toFixed(3)),timestamp:Date.now()/1000})}));
-(async()=>{try{await callApi(); await callHealth(); await callConfig(); await callWorld(); await callMemory(); await callState()}catch(e){out('health-output',e.data||e.message||String(e),true)}})();
+(async()=>{try{await callApi(); await callHealth(); await callConfig(); await callWorld(); await callMemory(); await callState(); await callRuntimeStatus()}catch(e){out('health-output',e.data||e.message||String(e),true)}})();
 </script>
 </body>
 </html>

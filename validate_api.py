@@ -27,10 +27,12 @@ assert api.status_code == 200, api.text
 assert api.json().get("interface") == "/interface"
 assert api.json().get("world_model") == "/world-model"
 assert api.json().get("memory") == "/memory"
+assert api.json().get("runtime") == "/runtime"
 
 interface = client.get("/interface")
 assert interface.status_code == 200, interface.text
 assert "Integrated Observe" in interface.text
+assert "Autonomous Runtime" in interface.text
 
 health = client.get("/health")
 assert health.status_code == 200, health.text
@@ -73,6 +75,16 @@ memory_state = client.get("/memory")
 assert memory_state.status_code == 200, memory_state.text
 state = client.get("/state")
 assert state.status_code == 200, state.text
+runtime = client.get("/runtime")
+assert runtime.status_code == 200, runtime.text
+assert "running" in runtime.json()
+runtime_tick = client.post("/runtime/tick")
+assert runtime_tick.status_code == 200, runtime_tick.text
+assert runtime_tick.json().get("tick_count", 0) >= 1
+runtime_start = client.post("/runtime/start", json={"interval_seconds": 60, "autosave_every_ticks": 2})
+assert runtime_start.status_code == 200, runtime_start.text
+runtime_stop = client.post("/runtime/stop")
+assert runtime_stop.status_code == 200, runtime_stop.text
 save = client.post("/state/save")
 assert save.status_code == 200, save.text
 load = client.post("/state/load")

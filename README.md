@@ -212,3 +212,32 @@ Z3_STATE_DIR=/data
 ```
 
 If no volume is attached, the app still saves state to a local `data/` directory, but that storage may not survive redeploys. The `/state`, `/state/save`, and `/state/load` endpoints expose the current persistence status.
+
+## Autonomous Runtime Loop
+
+The runtime now includes an always-on autonomous loop that can be controlled through the dashboard or API. Each tick creates a system heartbeat observation, feeds it through the online world model and resonant memory, composes a 16-dimensional Z³ input vector, runs one online neural training step, and autosaves state on a configurable interval.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/runtime` | `GET` | Show loop status, tick count, last tick, errors, and recent history. |
+| `/runtime/start` | `POST` | Start the background loop with `interval_seconds` and `autosave_every_ticks`. |
+| `/runtime/stop` | `POST` | Stop the background loop safely. |
+| `/runtime/tick` | `POST` | Run one autonomous learning tick synchronously. |
+
+Example:
+
+```bash
+curl -X POST "$RAILWAY_PUBLIC_DOMAIN/runtime/start" \
+  -H "Content-Type: application/json" \
+  -d '{"interval_seconds":30,"autosave_every_ticks":5}'
+```
+
+The autonomous loop can also be tuned with environment variables:
+
+| Variable | Default | Meaning |
+|---|---:|---|
+| `Z3_RUNTIME_INTERVAL` | `30` | Default seconds between background ticks. |
+| `Z3_AUTOSAVE_EVERY_TICKS` | `5` | Default number of ticks between state saves. |
+| `Z3_RUNTIME_LR` | `0.001` | Learning rate used by autonomous heartbeat training. |
+
+This is the first step from a manual endpoint demo toward a continuously pulsing, memory-bearing runtime. The loop does not replace external observations; it keeps the system alive between observations by training on its own heartbeat state and preserving continuity through autosave.

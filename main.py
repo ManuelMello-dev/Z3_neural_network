@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -16,6 +17,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from resonant_memory import ResonantMemoryGeometry
+from runtime_loop import AutonomousRuntimeLoop, RuntimeLoopConfig
 from state_store import StateStore
 from world_model import OnlineWorldModel
 
@@ -43,6 +45,7 @@ _STATE_STORE = StateStore()
 _STATE_LOADED = False
 _RUNTIME_LOCK = threading.Lock()
 _OPTIMIZER = None
+_RUNTIME_LOOP = None
 
 
 class StepRequest(BaseModel):
@@ -81,6 +84,13 @@ class IntegratedObserveRequest(ObservationRequest):
     learning_rate: float = Field(1e-3, gt=0.0, le=1.0, description="Learning rate when train=true.")
 
 
+class RuntimeStartRequest(BaseModel):
+    """Request payload for starting the autonomous runtime loop."""
+
+    interval_seconds: float = Field(30.0, ge=1.0, le=3600.0, description="Seconds between autonomous ticks.")
+    autosave_every_ticks: int = Field(5, ge=1, le=1000, description="Save state every N ticks.")
+
+
 def _render_interface() -> str:
     interface_path = os.path.join(os.path.dirname(__file__), "interface.html")
     with open(interface_path, "r", encoding="utf-8") as handle:
@@ -99,6 +109,7 @@ def _status_payload() -> Dict[str, Any]:
         "world_model": "/world-model",
         "memory": "/memory",
         "state": "/state",
+        "runtime": "/runtime",
     }
 
 
@@ -181,6 +192,71 @@ def _persist_if_requested(persist: bool) -> Optional[Dict[str, Any]]:
     return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY)
 
 
+def _runtime_save() -> Dict[str, Any]:
+    model = get_model()
+    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY)
+
+
+def _runtime_tick() -> Dict[str, Any]:
+    """Run one autonomous heartbeat observation and learning update."""
+    model = get_model()
+    phi, sigma = _current_phi_sigma(model)
+    observation = {
+        "timestamp": time.time(),
+        "source": "autonomous_runtime_loop",
+        "domain": "runtime",
+        "world_iteration": _WORLD_MODEL.iteration,
+        "memory_rings": len(_MEMORY.rings),
+        "phi": phi,
+        "sigma": sigma,
+        "tick_kind": "heartbeat_learning",
+    }
+    world_output = _WORLD_MODEL.observe(observation, domain="runtime")
+    memory_output = _MEMORY.observe(
+        observation,
+        domain="runtime",
+        phi_hint=phi,
+        sigma_hint=sigma,
+        constitutional_context={
+            "phi": phi,
+            "sigma": sigma,
+            "coherence": phi,
+            "drift": float(model.metrics_to_dict(model.last_metrics).get("z3_delta_norm", 0.0) or 0.0),
+            "regime": "autonomous_runtime",
+        },
+    )
+    z3_vector = _compose_z3_input(world_output.to_dict(), memory_output, model.config.input_dim)
+    x = _tensor_from_vector(z3_vector, model.config.input_dim)
+    optimizer = _get_optimizer(model, float(os.environ.get("Z3_RUNTIME_LR", "0.001")))
+    train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
+    with torch.no_grad():
+        projection_output = model.forward(x, hard_gate=True, update_state=False, add_noise=False)
+    return {
+        "observation": observation,
+        "input_vector": z3_vector,
+        "world_model": world_output.to_dict(),
+        "memory": memory_output,
+        "z3": {
+            "metrics": train_metrics,
+            "projection": model.public_projection(projection_output),
+        },
+    }
+
+
+def get_runtime_loop() -> AutonomousRuntimeLoop:
+    global _RUNTIME_LOOP
+    if _RUNTIME_LOOP is None:
+        _RUNTIME_LOOP = AutonomousRuntimeLoop(
+            tick_callback=_runtime_tick,
+            save_callback=_runtime_save,
+            config=RuntimeLoopConfig(
+                interval_seconds=float(os.environ.get("Z3_RUNTIME_INTERVAL", "30")),
+                autosave_every_ticks=int(os.environ.get("Z3_AUTOSAVE_EVERY_TICKS", "5")),
+            ),
+        )
+    return _RUNTIME_LOOP
+
+
 @app.get("/", response_class=HTMLResponse)
 def root() -> str:
     """Serve the browser dashboard as the default mobile-friendly landing page."""
@@ -209,6 +285,7 @@ def health() -> Dict[str, Any]:
         "state_loaded": _STATE_LOADED,
         "import_error": IMPORT_ERROR,
         "state_store": _STATE_STORE.manifest(),
+        "runtime": get_runtime_loop().status(),
     }
 
 
@@ -357,6 +434,31 @@ def state_load() -> Dict[str, Any]:
     _MODEL = loaded.pop("model")
     _STATE_LOADED = True
     return loaded
+
+
+@app.get("/runtime")
+def runtime_status() -> Dict[str, Any]:
+    return get_runtime_loop().status()
+
+
+@app.post("/runtime/start")
+def runtime_start(request: RuntimeStartRequest) -> Dict[str, Any]:
+    get_model()
+    return get_runtime_loop().start(
+        interval_seconds=request.interval_seconds,
+        autosave_every_ticks=request.autosave_every_ticks,
+    )
+
+
+@app.post("/runtime/stop")
+def runtime_stop() -> Dict[str, Any]:
+    return get_runtime_loop().stop()
+
+
+@app.post("/runtime/tick")
+def runtime_tick() -> Dict[str, Any]:
+    get_model()
+    return get_runtime_loop().tick_once()
 
 
 if __name__ == "__main__":
