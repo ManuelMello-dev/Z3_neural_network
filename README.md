@@ -115,7 +115,8 @@ The service exposes these endpoints:
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/` | `GET` | Basic service metadata. |
+| `/` | `GET` | Browser dashboard interface. |
+| `/api` | `GET` | Basic machine-readable service metadata. |
 | `/health` | `GET` | Railway health check and dependency status. |
 | `/config` | `GET` | Lazy-loads the neural model and returns config/metric names. |
 | `/step` | `POST` | Runs one Z³ runtime step using a supplied input vector. |
@@ -139,15 +140,16 @@ The service includes a browser-based control panel at:
 /interface
 ```
 
-The interface exposes every current endpoint from one page. It can call root metadata, health, configuration, runtime stepping, online train-step mutation, and the FastAPI OpenAPI documentation. The root endpoint `/` remains JSON metadata and now includes an `interface` link pointing to `/interface`.
+The interface exposes every current endpoint from one page. It can call API metadata, health, configuration, runtime stepping, online train-step mutation, and the FastAPI OpenAPI documentation. The root endpoint `/` now serves the dashboard directly for a better mobile landing experience, while JSON metadata lives at `/api`.
 
 | Interface Control | Backing Endpoint | Behavior |
 |---|---|---|
-| Root Metadata | `GET /` | Displays service metadata and navigation links. |
+| Dashboard Landing | `GET /` | Opens the browser interface directly. |
+| API Metadata | `GET /api` | Displays service metadata and navigation links. |
 | Health Check | `GET /health` | Displays dependency status, PyTorch availability, and model-load state. |
 | Runtime Config | `GET /config` | Lazy-loads the model and displays configuration plus metric names. |
 | Runtime Step | `POST /step` | Sends an input vector through one Z³ runtime step and displays projection, metrics, and prediction. |
 | Train Step | `POST /train-step` | Runs one lightweight online training step and displays updated metrics/projection. |
 | API Docs | `GET /docs` and `GET /openapi.json` | Opens the generated FastAPI schema and interactive documentation. |
 
-In Railway, open the deployed public URL and navigate to `/interface` to use the control panel.
+In Railway, open the deployed public URL to use the control panel immediately. `/interface` remains available as an explicit alias for the same dashboard.

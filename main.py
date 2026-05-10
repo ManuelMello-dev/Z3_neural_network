@@ -77,23 +77,35 @@ def _metrics(output: Dict[str, Any], model: Any) -> Dict[str, Any]:
     }
 
 
-@app.get("/")
-def root() -> Dict[str, Any]:
+def _render_interface() -> str:
+    interface_path = os.path.join(os.path.dirname(__file__), "interface.html")
+    with open(interface_path, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+@app.get("/", response_class=HTMLResponse)
+def root() -> str:
+    """Serve the browser dashboard as the default mobile-friendly landing page."""
+    return _render_interface()
+
+
+@app.get("/api")
+def api_metadata() -> Dict[str, Any]:
+    """Return machine-readable service metadata."""
     return {
         "service": "Z³ Neural Network Runtime",
         "status": "online",
         "docs": "/docs",
         "health": "/health",
         "interface": "/interface",
+        "api": "/api",
     }
 
 
 @app.get("/interface", response_class=HTMLResponse)
 def interface() -> str:
     """Serve the browser-based control panel exposing every API endpoint."""
-    interface_path = os.path.join(os.path.dirname(__file__), "interface.html")
-    with open(interface_path, "r", encoding="utf-8") as handle:
-        return handle.read()
+    return _render_interface()
 
 
 @app.get("/health")

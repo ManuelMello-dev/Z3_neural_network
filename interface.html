@@ -111,7 +111,7 @@
 <body>
   <header>
     <h1>Z³ Neural Network Interface</h1>
-    <p>This control panel exposes every runtime endpoint in the Railway service: root metadata, health, configuration, one-step inference, one-step online training, and OpenAPI documentation. The neural core remains in <strong>Z3_neural_dynamics.py</strong>; this page is the monitor and I/O membrane.</p>
+    <p>This control panel exposes every runtime endpoint in the Railway service: dashboard landing, API metadata, health, configuration, one-step inference, one-step online training, and OpenAPI documentation. The neural core remains in <strong>Z3_neural_dynamics.py</strong>; this page is the monitor and I/O membrane.</p>
   </header>
 
   <main>
@@ -124,10 +124,10 @@
 
     <div class="grid">
       <section>
-        <h2>Root Metadata <span class="endpoint">GET /</span></h2>
+        <h2>API Metadata <span class="endpoint">GET /api</span></h2>
         <div class="body">
-          <p class="help">Fetches the service landing metadata and available navigation links.</p>
-          <button data-call="root">Call /</button>
+          <p class="help">Fetches machine-readable service metadata and available navigation links.</p>
+          <button data-call="root">Call /api</button>
           <pre id="root-output">Waiting.</pre>
         </div>
       </section>
@@ -251,7 +251,7 @@
     }
 
     async function callRoot() {
-      const data = await request('/');
+      const data = await request('/api');
       setOutput('root-output', data);
     }
     async function callHealth() {

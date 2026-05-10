@@ -18,8 +18,11 @@ assert data["deploy"]["startCommand"] == "python main.py"
 
 client = TestClient(main.app)
 root = client.get("/")
-assert root.status_code == 200
-assert root.json().get("interface") == "/interface"
+assert root.status_code == 200, root.text
+assert "Z³ Neural Network Interface" in root.text
+api = client.get("/api")
+assert api.status_code == 200, api.text
+assert api.json().get("interface") == "/interface"
 interface = client.get("/interface")
 assert interface.status_code == 200, interface.text
 assert "Z³ Neural Network Interface" in interface.text
