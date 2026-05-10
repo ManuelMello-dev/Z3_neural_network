@@ -153,3 +153,62 @@ The interface exposes every current endpoint from one page. It can call API meta
 | API Docs | `GET /docs` and `GET /openapi.json` | Opens the generated FastAPI schema and interactive documentation. |
 
 In Railway, open the deployed public URL to use the control panel immediately. `/interface` remains available as an explicit alias for the same dashboard.
+
+## Migrated Cognitive Mesh Runtime Components
+
+This repository now includes the useful standalone pieces migrated from Cognitive Mesh without importing the whole application stack. The goal is to keep `Z3_neural_network` clean while giving it real stream learning, resonant memory, and Railway-safe persistence.
+
+| Component | File | Purpose |
+|---|---|---|
+| Online world model | `world_model.py` | Converts arbitrary observation dictionaries into compact learned latent states, prediction/reconstruction losses, novelty, and nearest-memory distance. |
+| Resonant memory | `resonant_memory.py` | Stores observations as phase-related memory rings with salience, anchors, phase alignment, top matches, and reconstruction confidence. |
+| State persistence | `state_store.py` | Saves and loads neural checkpoints plus world-model and memory JSON state. Uses `Z3_STATE_DIR`, `RAILWAY_VOLUME_MOUNT_PATH`, `/data`, or local `data/`. |
+| Integrated observe flow | `POST /observe` | Runs observation → world model → resonant memory → Z³ runtime vector → neural step or train step. |
+
+## Expanded API Surface
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/` | `GET` | Browser dashboard interface. |
+| `/api` | `GET` | Machine-readable service metadata and route map. |
+| `/health` | `GET` | Health, dependency, model-load, state-load, and persistence-store status. |
+| `/config` | `GET` | Z³ neural config, metric names, world-model summary, and memory summary. |
+| `/step` | `POST` | Manual Z³ runtime step from a numeric vector. |
+| `/train-step` | `POST` | Manual Z³ online train step from a numeric vector and optional target. |
+| `/world-model` | `GET` | Current online world-model state. |
+| `/world-model/observe` | `POST` | Observe one structured event with the world model only. |
+| `/memory` | `GET` | Current resonant-memory snapshot. |
+| `/memory/observe` | `POST` | Observe one structured event with resonant memory only. |
+| `/observe` | `POST` | Integrated observe flow across world model, resonant memory, and Z³. |
+| `/state` | `GET` | Persistence manifest showing checkpoint/state files. |
+| `/state/save` | `POST` | Save neural, world-model, and resonant-memory state. |
+| `/state/load` | `POST` | Reload neural, world-model, and resonant-memory state. |
+
+## Integrated Observation Example
+
+```bash
+curl -X POST "$RAILWAY_PUBLIC_DOMAIN/observe" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "conversation",
+    "train": false,
+    "persist": true,
+    "observation": {
+      "content": "first live observation",
+      "tone": 0.25,
+      "salience": 0.7
+    }
+  }'
+```
+
+The response includes the generated 16-dimensional Z³ input vector, world-model losses and novelty, resonant-memory confidence and matches, and the resulting Z³ projection.
+
+## Railway Persistence
+
+For persistence across Railway restarts, attach a Railway volume and set:
+
+```text
+Z3_STATE_DIR=/data
+```
+
+If no volume is attached, the app still saves state to a local `data/` directory, but that storage may not survive redeploys. The `/state`, `/state/save`, and `/state/load` endpoints expose the current persistence status.

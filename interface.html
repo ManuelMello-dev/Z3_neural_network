@@ -3,322 +3,69 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Z³ Neural Network Interface</title>
+  <title>Z³ Neural Runtime</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #070a12;
-      --panel: #101522;
-      --panel-2: #151d2e;
-      --text: #e8edf7;
-      --muted: #98a6bd;
-      --accent: #89dceb;
-      --accent-2: #b4f0a7;
-      --danger: #ff8a9a;
-      --border: rgba(255, 255, 255, 0.12);
-      --shadow: rgba(0, 0, 0, 0.35);
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: radial-gradient(circle at top left, rgba(137, 220, 235, 0.14), transparent 34%), var(--bg);
-      color: var(--text);
-      min-height: 100vh;
-    }
-    header {
-      padding: 48px clamp(20px, 5vw, 72px) 24px;
-      border-bottom: 1px solid var(--border);
-      background: linear-gradient(135deg, rgba(16, 21, 34, 0.94), rgba(7, 10, 18, 0.72));
-    }
-    header h1 { margin: 0 0 12px; font-size: clamp(2rem, 5vw, 4rem); letter-spacing: -0.04em; }
-    header p { max-width: 920px; color: var(--muted); font-size: 1.05rem; line-height: 1.6; margin: 0; }
-    main { padding: 28px clamp(20px, 5vw, 72px) 56px; }
-    .status-bar {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 14px;
-      margin-bottom: 26px;
-    }
-    .metric {
-      background: rgba(16, 21, 34, 0.82);
-      border: 1px solid var(--border);
-      border-radius: 18px;
-      padding: 18px;
-      box-shadow: 0 18px 48px var(--shadow);
-    }
-    .metric span { display: block; color: var(--muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; }
-    .metric strong { display: block; margin-top: 6px; font-size: 1.35rem; color: var(--accent-2); }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 430px), 1fr)); gap: 20px; }
-    section {
-      background: rgba(16, 21, 34, 0.9);
-      border: 1px solid var(--border);
-      border-radius: 22px;
-      box-shadow: 0 18px 48px var(--shadow);
-      overflow: hidden;
-    }
-    section h2 { margin: 0; padding: 20px 20px 8px; font-size: 1.1rem; }
-    section .body { padding: 0 20px 20px; }
-    .endpoint { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92rem; }
-    p.help { color: var(--muted); margin: 8px 0 14px; line-height: 1.5; }
-    label { display: block; color: var(--muted); font-size: 0.86rem; margin: 14px 0 6px; }
-    textarea, input, select {
-      width: 100%;
-      background: var(--panel-2);
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 12px;
-      font: 0.92rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      outline: none;
-    }
-    textarea { min-height: 112px; resize: vertical; }
-    .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
-    button, a.button {
-      appearance: none;
-      border: 0;
-      background: linear-gradient(135deg, #73daca, #89dceb);
-      color: #071018;
-      font-weight: 750;
-      padding: 11px 15px;
-      border-radius: 999px;
-      cursor: pointer;
-      text-decoration: none;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      margin-top: 14px;
-    }
-    button.secondary, a.button.secondary { background: #232d42; color: var(--text); border: 1px solid var(--border); }
-    button:disabled { opacity: 0.55; cursor: wait; }
-    pre {
-      margin: 14px 0 0;
-      padding: 14px;
-      background: #070a12;
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      overflow: auto;
-      max-height: 420px;
-      font-size: 0.84rem;
-      line-height: 1.45;
-    }
-    .error { color: var(--danger); }
-    .full { grid-column: 1 / -1; }
-    footer { color: var(--muted); padding: 0 clamp(20px, 5vw, 72px) 40px; }
+    :root{color-scheme:dark;--bg:#070a12;--panel:#101827;--panel2:#0b111d;--line:rgba(255,255,255,.12);--text:#edf4ff;--muted:#9aa9bd;--accent:#89dceb;--good:#b4f0a7;--warn:#ffd180;--bad:#ff8a9a;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 0 0,rgba(137,220,235,.18),transparent 34%),var(--bg);color:var(--text)}header{padding:34px 18px 20px;border-bottom:1px solid var(--line);background:linear-gradient(135deg,rgba(16,24,39,.95),rgba(7,10,18,.78))}h1{margin:0 0 10px;font-size:clamp(2rem,9vw,4rem);line-height:1;letter-spacing:-.05em}header p{margin:0;color:var(--muted);line-height:1.55;max-width:920px}main{padding:18px;display:grid;gap:16px}.status{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.metric,.card{background:rgba(16,24,39,.92);border:1px solid var(--line);border-radius:18px;box-shadow:0 16px 40px rgba(0,0,0,.28)}.metric{padding:14px}.metric span{display:block;color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em}.metric strong{display:block;margin-top:6px;color:var(--good);font-size:1.12rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,390px),1fr));gap:16px}.card{overflow:hidden}.card h2{margin:0;padding:16px 16px 6px;font-size:1.05rem}.method{color:var(--accent);font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.body{padding:0 16px 16px}.help{color:var(--muted);line-height:1.45;margin:6px 0 12px}label{display:block;color:var(--muted);font-size:.82rem;margin:10px 0 5px}textarea,input,select{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:11px;font:0.88rem ui-monospace,SFMono-Regular,Consolas,monospace}textarea{min-height:110px;resize:vertical}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}button,a.btn{border:0;border-radius:999px;background:linear-gradient(135deg,#73daca,#89dceb);color:#06101a;font-weight:800;padding:10px 14px;margin:10px 8px 0 0;display:inline-flex;text-decoration:none;cursor:pointer}button.secondary,a.btn.secondary{background:#202a3c;color:var(--text);border:1px solid var(--line)}button:disabled{opacity:.55;cursor:wait}pre{margin:12px 0 0;padding:12px;background:#050812;border:1px solid var(--line);border-radius:14px;overflow:auto;max-height:360px;font-size:.78rem;line-height:1.45}.wide{grid-column:1/-1}.bad{color:var(--bad)}code{color:var(--accent)}footer{padding:4px 18px 30px;color:var(--muted)}@media(min-width:900px){header{padding-left:46px}main{padding:24px 46px}.status{grid-template-columns:repeat(4,1fr)}}
   </style>
 </head>
 <body>
-  <header>
-    <h1>Z³ Neural Network Interface</h1>
-    <p>This control panel exposes every runtime endpoint in the Railway service: dashboard landing, API metadata, health, configuration, one-step inference, one-step online training, and OpenAPI documentation. The neural core remains in <strong>Z3_neural_dynamics.py</strong>; this page is the monitor and I/O membrane.</p>
-  </header>
+<header>
+  <h1>Z³ Neural Runtime</h1>
+  <p>Monitor and I/O membrane for the Z³ neural core, online world model, resonant memory, integrated observation flow, and Railway-safe state persistence.</p>
+</header>
+<main>
+  <div class="status">
+    <div class="metric"><span>Service</span><strong id="service-status">checking</strong></div>
+    <div class="metric"><span>Torch</span><strong id="torch-status">checking</strong></div>
+    <div class="metric"><span>Input Dim</span><strong id="input-dim">16</strong></div>
+    <div class="metric"><span>Memory Rings</span><strong id="memory-rings">0</strong></div>
+  </div>
 
-  <main>
-    <div class="status-bar">
-      <div class="metric"><span>Service</span><strong id="service-status">checking</strong></div>
-      <div class="metric"><span>Torch</span><strong id="torch-status">checking</strong></div>
-      <div class="metric"><span>Input Dim</span><strong id="input-dim">unknown</strong></div>
-      <div class="metric"><span>Model Loaded</span><strong id="model-loaded">unknown</strong></div>
-    </div>
+  <div class="grid">
+    <section class="card"><h2>API Metadata <span class="method">GET /api</span></h2><div class="body"><p class="help">Machine-readable route map.</p><button data-call="api">Call /api</button><pre id="api-output">Waiting.</pre></div></section>
+    <section class="card"><h2>Health <span class="method">GET /health</span></h2><div class="body"><p class="help">Dependency, model-load, and state-store status.</p><button data-call="health">Call /health</button><pre id="health-output">Waiting.</pre></div></section>
+    <section class="card"><h2>Config <span class="method">GET /config</span></h2><div class="body"><p class="help">Z³ config plus world-model and memory summaries.</p><button data-call="config">Call /config</button><pre id="config-output">Waiting.</pre></div></section>
+    <section class="card"><h2>Docs <span class="method">GET /docs</span></h2><div class="body"><p class="help">FastAPI schema and interactive docs.</p><a class="btn secondary" href="/docs" target="_blank">Open /docs</a><a class="btn secondary" href="/openapi.json" target="_blank">Open schema</a><pre>Docs open in a new tab.</pre></div></section>
 
-    <div class="grid">
-      <section>
-        <h2>API Metadata <span class="endpoint">GET /api</span></h2>
-        <div class="body">
-          <p class="help">Fetches machine-readable service metadata and available navigation links.</p>
-          <button data-call="root">Call /api</button>
-          <pre id="root-output">Waiting.</pre>
-        </div>
-      </section>
+    <section class="card wide"><h2>Integrated Observe <span class="method">POST /observe</span></h2><div class="body"><p class="help">Best path: observation → world latent → resonant memory → Z³ vector → runtime/train step.</p><label>Observation JSON</label><textarea id="observe-json">{"domain":"conversation","content":"first live observation","tone":0.25,"salience":0.7}</textarea><div class="row"><div><label>Domain</label><input id="observe-domain" value="conversation"></div><div><label>Train?</label><select id="observe-train"><option value="false">false</option><option value="true">true</option></select></div><div><label>Persist?</label><select id="observe-persist"><option value="true">true</option><option value="false">false</option></select></div><div><label>Learning rate</label><input id="observe-lr" type="number" step="0.0001" value="0.001"></div></div><button data-call="observe">Run /observe</button><button class="secondary" data-fill="sample-observe">Sample</button><pre id="observe-output">Waiting.</pre></div></section>
 
-      <section>
-        <h2>Health Check <span class="endpoint">GET /health</span></h2>
-        <div class="body">
-          <p class="help">Checks whether the service is online, PyTorch is importable, and the neural model has been loaded.</p>
-          <button data-call="health">Call /health</button>
-          <pre id="health-output">Waiting.</pre>
-        </div>
-      </section>
+    <section class="card"><h2>World Model <span class="method">GET /world-model</span></h2><div class="body"><p class="help">Current online world-model state.</p><button data-call="world">Call /world-model</button><pre id="world-output">Waiting.</pre></div></section>
+    <section class="card"><h2>World Observe <span class="method">POST /world-model/observe</span></h2><div class="body"><p class="help">Updates only the world model from an observation.</p><label>Observation JSON</label><textarea id="world-json">{"symbol":"Z3","value":1,"signal":"coherence"}</textarea><label>Domain</label><input id="world-domain" value="general"><button data-call="worldObserve">Run world observe</button><pre id="world-observe-output">Waiting.</pre></div></section>
 
-      <section>
-        <h2>Runtime Config <span class="endpoint">GET /config</span></h2>
-        <div class="body">
-          <p class="help">Lazy-loads the model and returns the neural configuration plus metric names.</p>
-          <button data-call="config">Call /config</button>
-          <pre id="config-output">Waiting.</pre>
-        </div>
-      </section>
+    <section class="card"><h2>Memory <span class="method">GET /memory</span></h2><div class="body"><p class="help">Resonant memory rings, reconstruction confidence, and top matches.</p><button data-call="memory">Call /memory</button><pre id="memory-output">Waiting.</pre></div></section>
+    <section class="card"><h2>Memory Observe <span class="method">POST /memory/observe</span></h2><div class="body"><p class="help">Updates only resonant memory from an observation.</p><label>Observation JSON</label><textarea id="memory-json">{"entity_id":"ECHO","concept":"memory","tone":0.8}</textarea><label>Domain</label><input id="memory-domain" value="memory"><button data-call="memoryObserve">Run memory observe</button><pre id="memory-observe-output">Waiting.</pre></div></section>
 
-      <section>
-        <h2>OpenAPI Docs <span class="endpoint">GET /docs</span></h2>
-        <div class="body">
-          <p class="help">Opens the automatically generated FastAPI documentation in a new tab.</p>
-          <a class="button secondary" href="/docs" target="_blank" rel="noreferrer">Open /docs</a>
-          <a class="button secondary" href="/openapi.json" target="_blank" rel="noreferrer">Open /openapi.json</a>
-          <pre>Interactive schema documentation is served by FastAPI.</pre>
-        </div>
-      </section>
+    <section class="card wide"><h2>Z³ Runtime Step <span class="method">POST /step</span></h2><div class="body"><p class="help">Manual vector step. Defaults to 16 dimensions.</p><label>Input vector</label><textarea id="step-vector">[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]</textarea><div class="row"><div><label>Hard gate</label><select id="step-hard"><option value="true">true</option><option value="false">false</option></select></div><div><label>Update state</label><select id="step-update"><option value="true">true</option><option value="false">false</option></select></div><div><label>Persist</label><select id="step-persist"><option value="false">false</option><option value="true">true</option></select></div></div><button data-call="step">Run /step</button><button class="secondary" data-fill="random-step">Randomize</button><pre id="step-output">Waiting.</pre></div></section>
 
-      <section class="full">
-        <h2>Runtime Step <span class="endpoint">POST /step</span></h2>
-        <div class="body">
-          <p class="help">Runs one inference/runtime step. The vector length must match <code>input_dim</code>, which defaults to 16.</p>
-          <label for="step-vector">Input vector JSON array</label>
-          <textarea id="step-vector">[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]</textarea>
-          <div class="row">
-            <div>
-              <label for="step-hard-gate">Hard gate</label>
-              <select id="step-hard-gate"><option value="true">true</option><option value="false">false</option></select>
-            </div>
-            <div>
-              <label for="step-update-state">Update recurrent state</label>
-              <select id="step-update-state"><option value="true">true</option><option value="false">false</option></select>
-            </div>
-          </div>
-          <button data-call="step">Run /step</button>
-          <button class="secondary" data-fill="random-step">Randomize vector</button>
-          <pre id="step-output">Waiting.</pre>
-        </div>
-      </section>
+    <section class="card wide"><h2>Train Step <span class="method">POST /train-step</span></h2><div class="body"><p class="help">Manual online train step. Mutates in-memory model and persists by default.</p><label>Input vector</label><textarea id="train-vector">[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]</textarea><label>Optional target vector</label><textarea id="target-vector"></textarea><div class="row"><div><label>Learning rate</label><input id="train-lr" type="number" step="0.0001" value="0.001"></div><div><label>Persist</label><select id="train-persist"><option value="true">true</option><option value="false">false</option></select></div></div><button data-call="train">Run /train-step</button><button class="secondary" data-fill="random-train">Randomize</button><pre id="train-output">Waiting.</pre></div></section>
 
-      <section class="full">
-        <h2>Train Step <span class="endpoint">POST /train-step</span></h2>
-        <div class="body">
-          <p class="help">Runs one lightweight online train step. Use this carefully in production because it mutates the in-memory model state.</p>
-          <label for="train-vector">Input vector JSON array</label>
-          <textarea id="train-vector">[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]</textarea>
-          <label for="target-vector">Optional target vector JSON array; leave blank to self-reconstruct</label>
-          <textarea id="target-vector"></textarea>
-          <label for="learning-rate">Learning rate</label>
-          <input id="learning-rate" type="number" min="0.000001" max="1" step="0.0001" value="0.001" />
-          <button data-call="train">Run /train-step</button>
-          <button class="secondary" data-fill="random-train">Randomize vector</button>
-          <pre id="train-output">Waiting.</pre>
-        </div>
-      </section>
-    </div>
-  </main>
-
-  <footer>Start command: <code>python main.py</code>. Health path: <code>/health</code>.</footer>
-
-  <script>
-    const $ = (id) => document.getElementById(id);
-    const pretty = (value) => JSON.stringify(value, null, 2);
-    let inputDim = 16;
-
-    function setOutput(id, value, isError = false) {
-      const node = $(id);
-      node.textContent = typeof value === 'string' ? value : pretty(value);
-      node.classList.toggle('error', isError);
-    }
-
-    async function request(path, options = {}) {
-      const response = await fetch(path, {
-        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-        ...options
-      });
-      const text = await response.text();
-      let data;
-      try { data = JSON.parse(text); } catch { data = text; }
-      if (!response.ok) throw { status: response.status, data };
-      return data;
-    }
-
-    function parseVector(id, allowBlank = false) {
-      const raw = $(id).value.trim();
-      if (allowBlank && !raw) return null;
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) throw new Error(`${id} must be a JSON array`);
-      return parsed.map(Number);
-    }
-
-    function randomVector() {
-      return Array.from({ length: inputDim }, () => Number((Math.random() * 2 - 1).toFixed(4)));
-    }
-
-    function updateStatusFromHealth(data) {
-      $('service-status').textContent = data.status || 'unknown';
-      $('torch-status').textContent = data.torch_available ? 'available' : 'missing';
-      $('model-loaded').textContent = data.model_loaded ? 'yes' : 'no';
-    }
-
-    function updateStatusFromConfig(data) {
-      if (data.config && data.config.input_dim) {
-        inputDim = data.config.input_dim;
-        $('input-dim').textContent = String(inputDim);
-      }
-    }
-
-    async function callRoot() {
-      const data = await request('/api');
-      setOutput('root-output', data);
-    }
-    async function callHealth() {
-      const data = await request('/health');
-      updateStatusFromHealth(data);
-      setOutput('health-output', data);
-    }
-    async function callConfig() {
-      const data = await request('/config');
-      updateStatusFromConfig(data);
-      await callHealth();
-      setOutput('config-output', data);
-    }
-    async function callStep() {
-      const payload = {
-        x: parseVector('step-vector'),
-        hard_gate: $('step-hard-gate').value === 'true',
-        update_state: $('step-update-state').value === 'true'
-      };
-      const data = await request('/step', { method: 'POST', body: JSON.stringify(payload) });
-      await callHealth();
-      setOutput('step-output', data);
-    }
-    async function callTrain() {
-      const target = parseVector('target-vector', true);
-      const payload = {
-        x: parseVector('train-vector'),
-        target,
-        learning_rate: Number($('learning-rate').value || 0.001)
-      };
-      const data = await request('/train-step', { method: 'POST', body: JSON.stringify(payload) });
-      await callHealth();
-      setOutput('train-output', data);
-    }
-
-    const calls = { root: callRoot, health: callHealth, config: callConfig, step: callStep, train: callTrain };
-    document.querySelectorAll('button[data-call]').forEach((button) => {
-      button.addEventListener('click', async () => {
-        const name = button.dataset.call;
-        button.disabled = true;
-        try { await calls[name](); }
-        catch (error) {
-          const outputId = name === 'train' ? 'train-output' : `${name}-output`;
-          setOutput(outputId, error.data || error.message || String(error), true);
-        }
-        finally { button.disabled = false; }
-      });
-    });
-
-    document.querySelectorAll('button[data-fill]').forEach((button) => {
-      button.addEventListener('click', (event) => {
-        event.preventDefault();
-        const vector = pretty(randomVector());
-        if (button.dataset.fill === 'random-step') $('step-vector').value = vector;
-        if (button.dataset.fill === 'random-train') $('train-vector').value = vector;
-      });
-    });
-
-    (async function boot() {
-      try {
-        await callRoot();
-        await callHealth();
-        await callConfig();
-      } catch (error) {
-        setOutput('health-output', error.data || error.message || String(error), true);
-      }
-    })();
-  </script>
+    <section class="card"><h2>State Manifest <span class="method">GET /state</span></h2><div class="body"><p class="help">Shows checkpoint files and state directory.</p><button data-call="state">Call /state</button><pre id="state-output">Waiting.</pre></div></section>
+    <section class="card"><h2>State Save/Load <span class="method">POST /state/save /state/load</span></h2><div class="body"><p class="help">Manual persistence controls for Railway volume-backed state.</p><button data-call="saveState">Save state</button><button class="secondary" data-call="loadState">Load state</button><pre id="state-action-output">Waiting.</pre></div></section>
+  </div>
+</main>
+<footer>Start command <code>python main.py</code>. Root <code>/</code> opens this dashboard. JSON metadata lives at <code>/api</code>.</footer>
+<script>
+const $=id=>document.getElementById(id); const pretty=v=>JSON.stringify(v,null,2); let inputDim=16;
+function out(id,v,bad=false){const n=$(id); n.textContent=typeof v==='string'?v:pretty(v); n.classList.toggle('bad',bad)}
+async function req(path,opt={}){const r=await fetch(path,{headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt}); const t=await r.text(); let d; try{d=JSON.parse(t)}catch{d=t} if(!r.ok) throw {status:r.status,data:d}; return d}
+function parseJSON(id,blank=false){const raw=$(id).value.trim(); if(blank&&!raw)return null; return JSON.parse(raw)}
+function parseVector(id,blank=false){const v=parseJSON(id,blank); if(v===null)return null; if(!Array.isArray(v))throw new Error(id+' must be a JSON array'); return v.map(Number)}
+function rand(){return Array.from({length:inputDim},()=>Number((Math.random()*2-1).toFixed(4)))}
+function updateStatus(h){if(h.status)$('service-status').textContent=h.status; if('torch_available'in h)$('torch-status').textContent=h.torch_available?'available':'missing'}
+function updateConfig(c){if(c.config&&c.config.input_dim){inputDim=c.config.input_dim; $('input-dim').textContent=inputDim} if(c.memory&&'rings'in c.memory)$('memory-rings').textContent=c.memory.rings}
+async function callApi(){out('api-output',await req('/api'))} async function callHealth(){const d=await req('/health'); updateStatus(d); out('health-output',d)} async function callConfig(){const d=await req('/config'); updateConfig(d); out('config-output',d); await callHealth()}
+async function callWorld(){out('world-output',await req('/world-model'))} async function callMemory(){const d=await req('/memory'); if(d.metrics&&'rings'in d.metrics)$('memory-rings').textContent=d.metrics.rings; out('memory-output',d)} async function callState(){out('state-output',await req('/state'))}
+async function post(path,payload){return await req(path,{method:'POST',body:JSON.stringify(payload)})}
+async function callWorldObserve(){const d=await post('/world-model/observe',{observation:parseJSON('world-json'),domain:$('world-domain').value,persist:true}); out('world-observe-output',d); await callConfig()}
+async function callMemoryObserve(){const d=await post('/memory/observe',{observation:parseJSON('memory-json'),domain:$('memory-domain').value,persist:true}); out('memory-observe-output',d); await callConfig()}
+async function callObserve(){const d=await post('/observe',{observation:parseJSON('observe-json'),domain:$('observe-domain').value,train:$('observe-train').value==='true',persist:$('observe-persist').value==='true',learning_rate:Number($('observe-lr').value||.001)}); out('observe-output',d); await callConfig()}
+async function callStep(){const d=await post('/step',{x:parseVector('step-vector'),hard_gate:$('step-hard').value==='true',update_state:$('step-update').value==='true',persist:$('step-persist').value==='true'}); out('step-output',d); await callConfig()}
+async function callTrain(){const d=await post('/train-step',{x:parseVector('train-vector'),target:parseVector('target-vector',true),learning_rate:Number($('train-lr').value||.001),persist:$('train-persist').value==='true'}); out('train-output',d); await callConfig()}
+async function callSave(){out('state-action-output',await post('/state/save',{})); await callState()} async function callLoad(){out('state-action-output',await post('/state/load',{})); await callConfig(); await callState()}
+const calls={api:callApi,health:callHealth,config:callConfig,world:callWorld,memory:callMemory,state:callState,worldObserve:callWorldObserve,memoryObserve:callMemoryObserve,observe:callObserve,step:callStep,train:callTrain,saveState:callSave,loadState:callLoad};
+document.querySelectorAll('button[data-call]').forEach(b=>b.addEventListener('click',async()=>{b.disabled=true;try{await calls[b.dataset.call]()}catch(e){out((b.closest('.card').querySelector('pre')||{}).id||'api-output',e.data||e.message||String(e),true)}finally{b.disabled=false}}));
+document.querySelectorAll('button[data-fill]').forEach(b=>b.addEventListener('click',e=>{e.preventDefault(); if(b.dataset.fill==='random-step')$('step-vector').value=pretty(rand()); if(b.dataset.fill==='random-train')$('train-vector').value=pretty(rand()); if(b.dataset.fill==='sample-observe')$('observe-json').value=pretty({domain:'conversation',content:'Z3 live observation',tone:Number(Math.random().toFixed(3)),salience:Number(Math.random().toFixed(3)),timestamp:Date.now()/1000})}));
+(async()=>{try{await callApi(); await callHealth(); await callConfig(); await callWorld(); await callMemory(); await callState()}catch(e){out('health-output',e.data||e.message||String(e),true)}})();
+</script>
 </body>
 </html>

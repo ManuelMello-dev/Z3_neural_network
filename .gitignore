@@ -19,9 +19,11 @@ dist/
 
 # Neural runtime outputs
 outputs/
+data/
 *.pt
 *.pth
 *.ckpt
+*.tmp
 
 # OS/editor
 .DS_Store
