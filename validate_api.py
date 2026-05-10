@@ -17,7 +17,12 @@ with open("railway.json", "r", encoding="utf-8") as handle:
 assert data["deploy"]["startCommand"] == "python main.py"
 
 client = TestClient(main.app)
-assert client.get("/").status_code == 200
+root = client.get("/")
+assert root.status_code == 200
+assert root.json().get("interface") == "/interface"
+interface = client.get("/interface")
+assert interface.status_code == 200, interface.text
+assert "Z³ Neural Network Interface" in interface.text
 health = client.get("/health")
 assert health.status_code == 200, health.text
 config = client.get("/config")

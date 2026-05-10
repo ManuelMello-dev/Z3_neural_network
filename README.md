@@ -130,3 +130,24 @@ curl -X POST "$RAILWAY_PUBLIC_DOMAIN/step" \
 ```
 
 `/step` requires a vector length matching `input_dim`, which defaults to `16`.
+
+## Browser Interface
+
+The service includes a browser-based control panel at:
+
+```text
+/interface
+```
+
+The interface exposes every current endpoint from one page. It can call root metadata, health, configuration, runtime stepping, online train-step mutation, and the FastAPI OpenAPI documentation. The root endpoint `/` remains JSON metadata and now includes an `interface` link pointing to `/interface`.
+
+| Interface Control | Backing Endpoint | Behavior |
+|---|---|---|
+| Root Metadata | `GET /` | Displays service metadata and navigation links. |
+| Health Check | `GET /health` | Displays dependency status, PyTorch availability, and model-load state. |
+| Runtime Config | `GET /config` | Lazy-loads the model and displays configuration plus metric names. |
+| Runtime Step | `POST /step` | Sends an input vector through one Z³ runtime step and displays projection, metrics, and prediction. |
+| Train Step | `POST /train-step` | Runs one lightweight online training step and displays updated metrics/projection. |
+| API Docs | `GET /docs` and `GET /openapi.json` | Opens the generated FastAPI schema and interactive documentation. |
+
+In Railway, open the deployed public URL and navigate to `/interface` to use the control panel.

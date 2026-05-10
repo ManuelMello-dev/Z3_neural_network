@@ -10,6 +10,7 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 try:  # Keep service importable enough to report dependency status.
@@ -83,7 +84,16 @@ def root() -> Dict[str, Any]:
         "status": "online",
         "docs": "/docs",
         "health": "/health",
+        "interface": "/interface",
     }
+
+
+@app.get("/interface", response_class=HTMLResponse)
+def interface() -> str:
+    """Serve the browser-based control panel exposing every API endpoint."""
+    interface_path = os.path.join(os.path.dirname(__file__), "interface.html")
+    with open(interface_path, "r", encoding="utf-8") as handle:
+        return handle.read()
 
 
 @app.get("/health")

@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Z³ Neural Network Interface</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #070a12;
+      --panel: #101522;
+      --panel-2: #151d2e;
+      --text: #e8edf7;
+      --muted: #98a6bd;
+      --accent: #89dceb;
+      --accent-2: #b4f0a7;
+      --danger: #ff8a9a;
+      --border: rgba(255, 255, 255, 0.12);
+      --shadow: rgba(0, 0, 0, 0.35);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top left, rgba(137, 220, 235, 0.14), transparent 34%), var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 48px clamp(20px, 5vw, 72px) 24px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(135deg, rgba(16, 21, 34, 0.94), rgba(7, 10, 18, 0.72));
+    }
+    header h1 { margin: 0 0 12px; font-size: clamp(2rem, 5vw, 4rem); letter-spacing: -0.04em; }
+    header p { max-width: 920px; color: var(--muted); font-size: 1.05rem; line-height: 1.6; margin: 0; }
+    main { padding: 28px clamp(20px, 5vw, 72px) 56px; }
+    .status-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      margin-bottom: 26px;
+    }
+    .metric {
+      background: rgba(16, 21, 34, 0.82);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 18px 48px var(--shadow);
+    }
+    .metric span { display: block; color: var(--muted); font-size: 0.82rem; text-transform: uppercase; letter-spacing: 0.08em; }
+    .metric strong { display: block; margin-top: 6px; font-size: 1.35rem; color: var(--accent-2); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 430px), 1fr)); gap: 20px; }
+    section {
+      background: rgba(16, 21, 34, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      box-shadow: 0 18px 48px var(--shadow);
+      overflow: hidden;
+    }
+    section h2 { margin: 0; padding: 20px 20px 8px; font-size: 1.1rem; }
+    section .body { padding: 0 20px 20px; }
+    .endpoint { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.92rem; }
+    p.help { color: var(--muted); margin: 8px 0 14px; line-height: 1.5; }
+    label { display: block; color: var(--muted); font-size: 0.86rem; margin: 14px 0 6px; }
+    textarea, input, select {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      font: 0.92rem ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      outline: none;
+    }
+    textarea { min-height: 112px; resize: vertical; }
+    .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; }
+    button, a.button {
+      appearance: none;
+      border: 0;
+      background: linear-gradient(135deg, #73daca, #89dceb);
+      color: #071018;
+      font-weight: 750;
+      padding: 11px 15px;
+      border-radius: 999px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 14px;
+    }
+    button.secondary, a.button.secondary { background: #232d42; color: var(--text); border: 1px solid var(--border); }
+    button:disabled { opacity: 0.55; cursor: wait; }
+    pre {
+      margin: 14px 0 0;
+      padding: 14px;
+      background: #070a12;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: auto;
+      max-height: 420px;
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }
+    .error { color: var(--danger); }
+    .full { grid-column: 1 / -1; }
+    footer { color: var(--muted); padding: 0 clamp(20px, 5vw, 72px) 40px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Z³ Neural Network Interface</h1>
+    <p>This control panel exposes every runtime endpoint in the Railway service: root metadata, health, configuration, one-step inference, one-step online training, and OpenAPI documentation. The neural core remains in <strong>Z3_neural_dynamics.py</strong>; this page is the monitor and I/O membrane.</p>
+  </header>
+
+  <main>
+    <div class="status-bar">
+      <div class="metric"><span>Service</span><strong id="service-status">checking</strong></div>
+      <div class="metric"><span>Torch</span><strong id="torch-status">checking</strong></div>
+      <div class="metric"><span>Input Dim</span><strong id="input-dim">unknown</strong></div>
+      <div class="metric"><span>Model Loaded</span><strong id="model-loaded">unknown</strong></div>
+    </div>
+
+    <div class="grid">
+      <section>
+        <h2>Root Metadata <span class="endpoint">GET /</span></h2>
+        <div class="body">
+          <p class="help">Fetches the service landing metadata and available navigation links.</p>
+          <button data-call="root">Call /</button>
+          <pre id="root-output">Waiting.</pre>
+        </div>
+      </section>
+
+      <section>
+        <h2>Health Check <span class="endpoint">GET /health</span></h2>
+        <div class="body">
+          <p class="help">Checks whether the service is online, PyTorch is importable, and the neural model has been loaded.</p>
+          <button data-call="health">Call /health</button>
+          <pre id="health-output">Waiting.</pre>
+        </div>
+      </section>
+
+      <section>
+        <h2>Runtime Config <span class="endpoint">GET /config</span></h2>
+        <div class="body">
+          <p class="help">Lazy-loads the model and returns the neural configuration plus metric names.</p>
+          <button data-call="config">Call /config</button>
+          <pre id="config-output">Waiting.</pre>
+        </div>
+      </section>
+
+      <section>
+        <h2>OpenAPI Docs <span class="endpoint">GET /docs</span></h2>
+        <div class="body">
+          <p class="help">Opens the automatically generated FastAPI documentation in a new tab.</p>
+          <a class="button secondary" href="/docs" target="_blank" rel="noreferrer">Open /docs</a>
+          <a class="button secondary" href="/openapi.json" target="_blank" rel="noreferrer">Open /openapi.json</a>
+          <pre>Interactive schema documentation is served by FastAPI.</pre>
+        </div>
+      </section>
+
+      <section class="full">
+        <h2>Runtime Step <span class="endpoint">POST /step</span></h2>
+        <div class="body">
+          <p class="help">Runs one inference/runtime step. The vector length must match <code>input_dim</code>, which defaults to 16.</p>
+          <label for="step-vector">Input vector JSON array</label>
+          <textarea id="step-vector">[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]</textarea>
+          <div class="row">
+            <div>
+              <label for="step-hard-gate">Hard gate</label>
+              <select id="step-hard-gate"><option value="true">true</option><option value="false">false</option></select>
+            </div>
+            <div>
+              <label for="step-update-state">Update recurrent state</label>
+              <select id="step-update-state"><option value="true">true</option><option value="false">false</option></select>
+            </div>
+          </div>
+          <button data-call="step">Run /step</button>
+          <button class="secondary" data-fill="random-step">Randomize vector</button>
+          <pre id="step-output">Waiting.</pre>
+        </div>
+      </section>
+
+      <section class="full">
+        <h2>Train Step <span class="endpoint">POST /train-step</span></h2>
+        <div class="body">
+          <p class="help">Runs one lightweight online train step. Use this carefully in production because it mutates the in-memory model state.</p>
+          <label for="train-vector">Input vector JSON array</label>
+          <textarea id="train-vector">[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]</textarea>
+          <label for="target-vector">Optional target vector JSON array; leave blank to self-reconstruct</label>
+          <textarea id="target-vector"></textarea>
+          <label for="learning-rate">Learning rate</label>
+          <input id="learning-rate" type="number" min="0.000001" max="1" step="0.0001" value="0.001" />
+          <button data-call="train">Run /train-step</button>
+          <button class="secondary" data-fill="random-train">Randomize vector</button>
+          <pre id="train-output">Waiting.</pre>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer>Start command: <code>python main.py</code>. Health path: <code>/health</code>.</footer>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const pretty = (value) => JSON.stringify(value, null, 2);
+    let inputDim = 16;
+
+    function setOutput(id, value, isError = false) {
+      const node = $(id);
+      node.textContent = typeof value === 'string' ? value : pretty(value);
+      node.classList.toggle('error', isError);
+    }
+
+    async function request(path, options = {}) {
+      const response = await fetch(path, {
+        headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+        ...options
+      });
+      const text = await response.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = text; }
+      if (!response.ok) throw { status: response.status, data };
+      return data;
+    }
+
+    function parseVector(id, allowBlank = false) {
+      const raw = $(id).value.trim();
+      if (allowBlank && !raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error(`${id} must be a JSON array`);
+      return parsed.map(Number);
+    }
+
+    function randomVector() {
+      return Array.from({ length: inputDim }, () => Number((Math.random() * 2 - 1).toFixed(4)));
+    }
+
+    function updateStatusFromHealth(data) {
+      $('service-status').textContent = data.status || 'unknown';
+      $('torch-status').textContent = data.torch_available ? 'available' : 'missing';
+      $('model-loaded').textContent = data.model_loaded ? 'yes' : 'no';
+    }
+
+    function updateStatusFromConfig(data) {
+      if (data.config && data.config.input_dim) {
+        inputDim = data.config.input_dim;
+        $('input-dim').textContent = String(inputDim);
+      }
+    }
+
+    async function callRoot() {
+      const data = await request('/');
+      setOutput('root-output', data);
+    }
+    async function callHealth() {
+      const data = await request('/health');
+      updateStatusFromHealth(data);
+      setOutput('health-output', data);
+    }
+    async function callConfig() {
+      const data = await request('/config');
+      updateStatusFromConfig(data);
+      await callHealth();
+      setOutput('config-output', data);
+    }
+    async function callStep() {
+      const payload = {
+        x: parseVector('step-vector'),
+        hard_gate: $('step-hard-gate').value === 'true',
+        update_state: $('step-update-state').value === 'true'
+      };
+      const data = await request('/step', { method: 'POST', body: JSON.stringify(payload) });
+      await callHealth();
+      setOutput('step-output', data);
+    }
+    async function callTrain() {
+      const target = parseVector('target-vector', true);
+      const payload = {
+        x: parseVector('train-vector'),
+        target,
+        learning_rate: Number($('learning-rate').value || 0.001)
+      };
+      const data = await request('/train-step', { method: 'POST', body: JSON.stringify(payload) });
+      await callHealth();
+      setOutput('train-output', data);
+    }
+
+    const calls = { root: callRoot, health: callHealth, config: callConfig, step: callStep, train: callTrain };
+    document.querySelectorAll('button[data-call]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const name = button.dataset.call;
+        button.disabled = true;
+        try { await calls[name](); }
+        catch (error) {
+          const outputId = name === 'train' ? 'train-output' : `${name}-output`;
+          setOutput(outputId, error.data || error.message || String(error), true);
+        }
+        finally { button.disabled = false; }
+      });
+    });
+
+    document.querySelectorAll('button[data-fill]').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        const vector = pretty(randomVector());
+        if (button.dataset.fill === 'random-step') $('step-vector').value = vector;
+        if (button.dataset.fill === 'random-train') $('train-vector').value = vector;
+      });
+    });
+
+    (async function boot() {
+      try {
+        await callRoot();
+        await callHealth();
+        await callConfig();
+      } catch (error) {
+        setOutput('health-output', error.data || error.message || String(error), true);
+      }
+    })();
+  </script>
+</body>
+</html>
