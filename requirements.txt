@@ -1,0 +1,3 @@
+# Install an environment-appropriate PyTorch build.
+# CPU-only default shown here; for CUDA builds, follow https://pytorch.org/get-started/locally/
+torch>=2.2

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "z3-neural-network"
+version = "0.1.0"
+description = "Standalone Z3 / Z-prime neural dynamics runtime."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.2",
+]
+
+[tool.setuptools]
+py-modules = ["Z3_neural_dynamics"]
