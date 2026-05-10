@@ -89,3 +89,44 @@ This repository should remain the canonical neural dynamics core. A larger syste
 ## Zip Inspection Note
 
 The uploaded `Z3_neural_network-main.zip` contained only `LICENSE` and the placeholder `README.md`; it did not include additional non-core assets useful for this repository. No extra files from the zip were merged beyond preserving the existing license and replacing the placeholder README with this full documentation.
+
+## Railway Deployment
+
+Railway needs a long-running web process. This repository therefore includes a minimal FastAPI membrane in `main.py` while keeping `Z3_neural_dynamics.py` as the neural-core library.
+
+The explicit Railway start command is:
+
+```bash
+python main.py
+```
+
+The repository also includes `railway.json`, which sets this command automatically for Railpack:
+
+```json
+{
+  "deploy": {
+    "startCommand": "python main.py",
+    "healthcheckPath": "/health"
+  }
+}
+```
+
+The service exposes these endpoints:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/` | `GET` | Basic service metadata. |
+| `/health` | `GET` | Railway health check and dependency status. |
+| `/config` | `GET` | Lazy-loads the neural model and returns config/metric names. |
+| `/step` | `POST` | Runs one Z³ runtime step using a supplied input vector. |
+| `/train-step` | `POST` | Runs one lightweight online train step using a supplied input vector and optional target. |
+
+Example runtime step request:
+
+```bash
+curl -X POST "$RAILWAY_PUBLIC_DOMAIN/step" \
+  -H "Content-Type: application/json" \
+  -d '{"x":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}'
+```
+
+`/step` requires a vector length matching `input_dim`, which defaults to `16`.
