@@ -29,12 +29,15 @@ assert api.json().get("world_model") == "/world-model"
 assert api.json().get("memory") == "/memory"
 assert api.json().get("runtime") == "/runtime"
 assert api.json().get("cern") == "/cern"
+assert api.json().get("infra") == "/infra"
 
 interface = client.get("/interface")
 assert interface.status_code == 200, interface.text
 assert "Integrated Observe" in interface.text
 assert "Autonomous Runtime" in interface.text
 assert "CERN Collision Stream" in interface.text
+assert "Infrastructure" in interface.text
+assert "CERN auto-ingest" in interface.text
 
 health = client.get("/health")
 assert health.status_code == 200, health.text
@@ -83,11 +86,34 @@ cern = client.get("/cern")
 assert cern.status_code == 200, cern.text
 assert cern.json().get("dataset", {}).get("domain") == "cern:cms:dielectron"
 assert "running" in runtime.json()
+assert "cern_schedule" in runtime.json()
+assert runtime.json()["cern_schedule"].get("enabled") is True
+infra = client.get("/infra")
+assert infra.status_code == 200, infra.text
+assert "volume" in infra.json()
+assert "qdrant" in infra.json()
+assert "redis" in infra.json()
+assert "postgres" in infra.json()
+infra_sync = client.post("/infra/sync")
+assert infra_sync.status_code == 200, infra_sync.text
 runtime_tick = client.post("/runtime/tick")
 assert runtime_tick.status_code == 200, runtime_tick.text
 assert runtime_tick.json().get("tick_count", 0) >= 1
-runtime_start = client.post("/runtime/start", json={"interval_seconds": 60, "autosave_every_ticks": 2})
+runtime_start = client.post(
+    "/runtime/start",
+    json={
+        "interval_seconds": 60,
+        "autosave_every_ticks": 2,
+        "cern_enabled": True,
+        "cern_every_ticks": 3,
+        "cern_batch_size": 1,
+        "cern_train": False,
+        "cern_learning_rate": 0.001,
+    },
+)
 assert runtime_start.status_code == 200, runtime_start.text
+assert runtime_start.json()["cern_schedule"]["every_ticks"] == 3
+assert runtime_start.json()["cern_schedule"]["batch_size"] == 1
 runtime_stop = client.post("/runtime/stop")
 assert runtime_stop.status_code == 200, runtime_stop.text
 save = client.post("/state/save")

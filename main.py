@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from cern_stream import CERNCollisionStream
+from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
 from runtime_loop import AutonomousRuntimeLoop, RuntimeLoopConfig
 from state_store import StateStore
@@ -43,11 +44,20 @@ _MODEL = None
 _WORLD_MODEL = OnlineWorldModel(feature_dim=64, latent_dim=8)
 _MEMORY = ResonantMemoryGeometry(max_rings=256, resonance_horizon=72)
 _CERN_STREAM = CERNCollisionStream()
+_INFRA = InfrastructureHub()
 _STATE_STORE = StateStore()
 _STATE_LOADED = False
 _RUNTIME_LOCK = threading.Lock()
 _OPTIMIZER = None
 _RUNTIME_LOOP = None
+_RUNTIME_TICK_SEQUENCE = 0
+_RUNTIME_CERN_CONFIG: Dict[str, Any] = {
+    "enabled": os.environ.get("Z3_RUNTIME_CERN_ENABLED", "true").lower() in ("1", "true", "yes", "on"),
+    "every_ticks": int(os.environ.get("Z3_RUNTIME_CERN_EVERY_TICKS", "10")),
+    "batch_size": int(os.environ.get("Z3_RUNTIME_CERN_BATCH_SIZE", "5")),
+    "train": os.environ.get("Z3_RUNTIME_CERN_TRAIN", "false").lower() in ("1", "true", "yes", "on"),
+    "learning_rate": float(os.environ.get("Z3_RUNTIME_CERN_LR", "0.001")),
+}
 
 
 class StepRequest(BaseModel):
@@ -91,6 +101,11 @@ class RuntimeStartRequest(BaseModel):
 
     interval_seconds: float = Field(30.0, ge=1.0, le=3600.0, description="Seconds between autonomous ticks.")
     autosave_every_ticks: int = Field(5, ge=1, le=1000, description="Save state every N ticks.")
+    cern_enabled: bool = Field(True, description="Periodically ingest CERN collision batches during autonomous ticks.")
+    cern_every_ticks: int = Field(10, ge=1, le=10000, description="Run CERN ingestion every N autonomous ticks when enabled.")
+    cern_batch_size: int = Field(5, ge=1, le=250, description="CERN collision events to ingest per scheduled batch.")
+    cern_train: bool = Field(False, description="Train Z³ on each scheduled CERN event instead of runtime stepping only.")
+    cern_learning_rate: float = Field(1e-3, gt=0.0, le=1.0, description="Learning rate for scheduled CERN training when cern_train=true.")
 
 
 class CERNBatchRequest(BaseModel):
@@ -122,6 +137,7 @@ def _status_payload() -> Dict[str, Any]:
         "state": "/state",
         "runtime": "/runtime",
         "cern": "/cern",
+        "infra": "/infra",
     }
 
 
@@ -209,8 +225,48 @@ def _runtime_save() -> Dict[str, Any]:
     return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY)
 
 
+def _runtime_cern_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not results:
+        return {}
+    world_losses = [float(item.get("world_model", {}).get("total_loss", 0.0) or 0.0) for item in results]
+    confidences = [float(item.get("memory", {}).get("reconstruction_confidence", 0.0) or 0.0) for item in results]
+    return {
+        "events_ingested": len(results),
+        "mean_world_loss": round(sum(world_losses) / max(len(world_losses), 1), 6),
+        "mean_memory_confidence": round(sum(confidences) / max(len(confidences), 1), 6),
+    }
+
+
+def _ingest_cern_batch_for_runtime(*, batch_size: int, train: bool, learning_rate: float) -> Dict[str, Any]:
+    batch = _CERN_STREAM.fetch_batch(batch_size=batch_size)
+    results: List[Dict[str, Any]] = []
+    for observation in batch.get("observations", []):
+        integrated = IntegratedObserveRequest(
+            observation=observation,
+            domain=batch.get("domain", CERNCollisionStream.DEFAULT_DOMAIN),
+            train=train,
+            persist=False,
+            learning_rate=learning_rate,
+        )
+        results.append(integrated_observe(integrated))
+    return {
+        "dataset": batch.get("dataset"),
+        "domain": batch.get("domain"),
+        "count": len(results),
+        "offset": batch.get("offset"),
+        "summary": _runtime_cern_summary(results),
+        "sample_entity_ids": [
+            item.get("world_model", {}).get("observation", {}).get("entity_id")
+            for item in results[:5]
+        ],
+    }
+
+
 def _runtime_tick() -> Dict[str, Any]:
-    """Run one autonomous heartbeat observation and learning update."""
+    """Run one autonomous heartbeat observation and optional CERN learning update."""
+    global _RUNTIME_TICK_SEQUENCE
+    _RUNTIME_TICK_SEQUENCE += 1
+    runtime_tick_id = _RUNTIME_TICK_SEQUENCE
     model = get_model()
     phi, sigma = _current_phi_sigma(model)
     observation = {
@@ -222,6 +278,8 @@ def _runtime_tick() -> Dict[str, Any]:
         "phi": phi,
         "sigma": sigma,
         "tick_kind": "heartbeat_learning",
+        "runtime_tick_id": runtime_tick_id,
+        "cern_ingestion_enabled": bool(_RUNTIME_CERN_CONFIG.get("enabled", False)),
     }
     world_output = _WORLD_MODEL.observe(observation, domain="runtime")
     memory_output = _MEMORY.observe(
@@ -243,6 +301,17 @@ def _runtime_tick() -> Dict[str, Any]:
     train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
     with torch.no_grad():
         projection_output = model.forward(x, hard_gate=True, update_state=False, add_noise=False)
+
+    cern_result: Optional[Dict[str, Any]] = None
+    cern_enabled = bool(_RUNTIME_CERN_CONFIG.get("enabled", False))
+    cern_every = max(1, int(_RUNTIME_CERN_CONFIG.get("every_ticks", 10)))
+    if cern_enabled and runtime_tick_id % cern_every == 0:
+        cern_result = _ingest_cern_batch_for_runtime(
+            batch_size=max(1, int(_RUNTIME_CERN_CONFIG.get("batch_size", 5))),
+            train=bool(_RUNTIME_CERN_CONFIG.get("train", False)),
+            learning_rate=float(_RUNTIME_CERN_CONFIG.get("learning_rate", 0.001)),
+        )
+
     return {
         "observation": observation,
         "input_vector": z3_vector,
@@ -252,6 +321,8 @@ def _runtime_tick() -> Dict[str, Any]:
             "metrics": train_metrics,
             "projection": model.public_projection(projection_output),
         },
+        "cern_ingestion": cern_result,
+        "cern_config": dict(_RUNTIME_CERN_CONFIG),
     }
 
 
@@ -267,6 +338,25 @@ def get_runtime_loop() -> AutonomousRuntimeLoop:
             ),
         )
     return _RUNTIME_LOOP
+
+
+def runtime_status_payload() -> Dict[str, Any]:
+    payload = get_runtime_loop().status()
+    payload["cern_schedule"] = dict(_RUNTIME_CERN_CONFIG)
+    payload["cern_stream"] = _CERN_STREAM.status()
+    return payload
+
+
+def apply_runtime_cern_config(request: RuntimeStartRequest) -> None:
+    _RUNTIME_CERN_CONFIG.update(
+        {
+            "enabled": bool(request.cern_enabled),
+            "every_ticks": max(1, int(request.cern_every_ticks)),
+            "batch_size": max(1, int(request.cern_batch_size)),
+            "train": bool(request.cern_train),
+            "learning_rate": float(request.cern_learning_rate),
+        }
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -297,7 +387,7 @@ def health() -> Dict[str, Any]:
         "state_loaded": _STATE_LOADED,
         "import_error": IMPORT_ERROR,
         "state_store": _STATE_STORE.manifest(),
-        "runtime": get_runtime_loop().status(),
+        "runtime": runtime_status_payload(),
     }
 
 
@@ -365,26 +455,13 @@ def cern_fetch(request: CERNBatchRequest) -> Dict[str, Any]:
 @app.post("/cern/ingest")
 def cern_ingest(request: CERNBatchRequest) -> Dict[str, Any]:
     """Fetch CERN collision observations and feed them through the integrated Z³ observe path."""
-    batch = _CERN_STREAM.fetch_batch(batch_size=request.batch_size)
-    results = []
-    for observation in batch.get("observations", []):
-        integrated = IntegratedObserveRequest(
-            observation=observation,
-            domain=batch.get("domain", CERNCollisionStream.DEFAULT_DOMAIN),
-            train=request.train,
-            persist=False,
-            learning_rate=request.learning_rate,
-        )
-        results.append(integrated_observe(integrated))
+    summary = _ingest_cern_batch_for_runtime(
+        batch_size=request.batch_size,
+        train=request.train,
+        learning_rate=request.learning_rate,
+    )
     manifest = _persist_if_requested(request.persist)
-    return {
-        "dataset": batch.get("dataset"),
-        "domain": batch.get("domain"),
-        "count": len(results),
-        "offset": batch.get("offset"),
-        "results": results,
-        "state_manifest": manifest,
-    }
+    return {**summary, "state_manifest": manifest}
 
 
 @app.get("/world-model")
@@ -464,10 +541,37 @@ def integrated_observe(request: IntegratedObserveRequest) -> Dict[str, Any]:
         "memory": memory_output,
         "z3": z3_response,
     }
+    response["infra"] = _INFRA.record_observation(
+        observation=request.observation,
+        domain=request.domain,
+        vector=z3_vector,
+        world_model=world_output.to_dict(),
+        memory=memory_output,
+        z3_metrics=z3_response.get("metrics", {}),
+    )
     manifest = _persist_if_requested(request.persist)
     if manifest:
         response["state_manifest"] = manifest
     return response
+
+
+@app.get("/infra")
+def infra_status() -> Dict[str, Any]:
+    """Return optional Railway infrastructure wiring status."""
+    return _INFRA.status(state_manifest=_STATE_STORE.manifest())
+
+
+@app.post("/infra/sync")
+def infra_sync() -> Dict[str, Any]:
+    """Push a lightweight runtime snapshot to configured infrastructure backends."""
+    snapshot = {
+        "runtime": runtime_status_payload(),
+        "state": _STATE_STORE.manifest(),
+        "world_model": _WORLD_MODEL.get_state(),
+        "memory": _MEMORY.get_snapshot(recent_ring_count=5).get("metrics", {}),
+        "cern": _CERN_STREAM.status(),
+    }
+    return _INFRA.sync_snapshot(snapshot)
 
 
 @app.get("/state")
@@ -493,27 +597,31 @@ def state_load() -> Dict[str, Any]:
 
 @app.get("/runtime")
 def runtime_status() -> Dict[str, Any]:
-    return get_runtime_loop().status()
+    return runtime_status_payload()
 
 
 @app.post("/runtime/start")
 def runtime_start(request: RuntimeStartRequest) -> Dict[str, Any]:
     get_model()
-    return get_runtime_loop().start(
+    apply_runtime_cern_config(request)
+    get_runtime_loop().start(
         interval_seconds=request.interval_seconds,
         autosave_every_ticks=request.autosave_every_ticks,
     )
+    return runtime_status_payload()
 
 
 @app.post("/runtime/stop")
 def runtime_stop() -> Dict[str, Any]:
-    return get_runtime_loop().stop()
+    get_runtime_loop().stop()
+    return runtime_status_payload()
 
 
 @app.post("/runtime/tick")
 def runtime_tick() -> Dict[str, Any]:
     get_model()
-    return get_runtime_loop().tick_once()
+    get_runtime_loop().tick_once()
+    return runtime_status_payload()
 
 
 if __name__ == "__main__":

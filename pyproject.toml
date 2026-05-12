@@ -14,7 +14,9 @@ dependencies = [
     "uvicorn[standard]>=0.27",
     "pydantic>=2.0",
     "numpy>=1.24",
+    "redis>=5.0",
+    "psycopg[binary]>=3.1",
 ]
 
 [tool.setuptools]
-py-modules = ["Z3_neural_dynamics", "main", "world_model", "resonant_memory", "state_store", "runtime_loop", "cern_stream"]
+py-modules = ["Z3_neural_dynamics", "main", "world_model", "resonant_memory", "state_store", "runtime_loop", "cern_stream", "infra_adapters"]
