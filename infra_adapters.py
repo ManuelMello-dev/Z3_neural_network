@@ -1,4 +1,4 @@
-"""Optional Railway infrastructure adapters for the Z³ runtime.
+"""Optional infrastructure adapters for the Z³ Railway runtime.
 
 The runtime must remain usable without external services. This module therefore
 uses lazy optional imports and reports unavailable services instead of raising
@@ -12,7 +12,7 @@ import json
 import os
 import time
 import uuid
-import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -21,8 +21,69 @@ def _env_any(*names: str) -> Optional[str]:
     for name in names:
         value = os.environ.get(name)
         if value:
-            return value
+            return value.strip()
     return None
+
+
+def _is_url(value: str, *schemes: str) -> bool:
+    lowered = value.lower()
+    return any(lowered.startswith(f"{scheme}://") for scheme in schemes)
+
+
+def _quote(value: Optional[str]) -> str:
+    return urllib.parse.quote(value or "", safe="")
+
+
+def _normalize_redis_url(value: Optional[str]) -> Optional[str]:
+    """Return a Redis URL from either a full URL or Railway component variables."""
+    if value and _is_url(value, "redis", "rediss", "unix"):
+        return value
+
+    host = value if value and "://" not in value else None
+    host = host or _env_any("REDISHOST", "REDIS_HOST", "REDIS_PRIVATE_HOST", "RAILWAY_REDIS_HOST")
+    if not host:
+        return None
+
+    port = _env_any("REDISPORT", "REDIS_PORT", "RAILWAY_REDIS_PORT") or "6379"
+    username = _env_any("REDISUSER", "REDIS_USERNAME", "REDIS_USER")
+    password = _env_any("REDISPASSWORD", "REDIS_PASSWORD", "RAILWAY_REDIS_PASSWORD")
+    database = _env_any("REDIS_DB", "REDISDATABASE", "REDIS_DATABASE") or "0"
+    scheme = "rediss" if os.environ.get("REDIS_TLS", "").lower() in ("1", "true", "yes", "on") else "redis"
+
+    if username and password:
+        auth = f"{_quote(username)}:{_quote(password)}@"
+    elif password:
+        auth = f":{_quote(password)}@"
+    else:
+        auth = ""
+    return f"{scheme}://{auth}{host}:{port}/{database}"
+
+
+def _normalize_postgres_dsn(value: Optional[str]) -> Optional[str]:
+    """Return a psycopg-compatible Postgres DSN from URL, key/value DSN, or Railway components."""
+    if value:
+        if _is_url(value, "postgres", "postgresql") or "=" in value:
+            return value
+        host = value
+    else:
+        host = _env_any("PGHOST", "POSTGRES_HOST", "POSTGRES_PRIVATE_HOST", "RAILWAY_POSTGRES_HOST")
+
+    if not host:
+        return None
+
+    port = _env_any("PGPORT", "POSTGRES_PORT", "RAILWAY_POSTGRES_PORT") or "5432"
+    database = _env_any("PGDATABASE", "POSTGRES_DB", "POSTGRES_DATABASE", "RAILWAY_POSTGRES_DATABASE") or "railway"
+    username = _env_any("PGUSER", "POSTGRES_USER", "POSTGRES_USERNAME", "RAILWAY_POSTGRES_USER") or "postgres"
+    password = _env_any("PGPASSWORD", "POSTGRES_PASSWORD", "RAILWAY_POSTGRES_PASSWORD")
+    sslmode = _env_any("PGSSLMODE", "POSTGRES_SSLMODE")
+
+    credentials = _quote(username)
+    if password:
+        credentials = f"{credentials}:{_quote(password)}"
+    dsn = f"postgresql://{credentials}@{host}:{port}/{_quote(database)}"
+    if sslmode:
+        dsn = f"{dsn}?sslmode={_quote(sslmode)}"
+    return dsn
 
 
 class InfrastructureHub:
@@ -32,8 +93,8 @@ class InfrastructureHub:
         self.qdrant_url = (_env_any("QDRANT_URL", "QDRANT_PUBLIC_URL", "QDRANT_PRIVATE_URL") or "").rstrip("/")
         self.qdrant_api_key = _env_any("QDRANT_API_KEY")
         self.qdrant_collection = os.environ.get("QDRANT_COLLECTION", "z3_observations")
-        self.redis_url = _env_any("REDIS_URL", "REDIS_PRIVATE_URL")
-        self.postgres_url = _env_any("DATABASE_URL", "POSTGRES_URL", "POSTGRES_PRIVATE_URL")
+        self.redis_url = _normalize_redis_url(_env_any("REDIS_URL", "REDIS_PRIVATE_URL"))
+        self.postgres_url = _normalize_postgres_dsn(_env_any("DATABASE_URL", "POSTGRES_URL", "POSTGRES_PRIVATE_URL"))
         self._qdrant_ready = False
         self._postgres_ready = False
 
@@ -122,8 +183,6 @@ class InfrastructureHub:
             f"/collections/{self.qdrant_collection}",
             {"vectors": {"size": int(vector_size), "distance": "Cosine"}},
         )
-        # Qdrant returns success if created; if it already exists with same schema,
-        # upsert may still work, so we do not fail hard here.
         self._qdrant_ready = True
         return create
 
@@ -142,7 +201,7 @@ class InfrastructureHub:
 
     def _redis_status(self) -> Dict[str, Any]:
         if not self.redis_url:
-            return {"configured": False, "ok": False, "reason": "REDIS_URL not set"}
+            return {"configured": False, "ok": False, "reason": "REDIS_URL not set or could not be built from component variables"}
         try:
             import redis  # type: ignore
 
@@ -157,7 +216,7 @@ class InfrastructureHub:
 
     def _redis_set(self, key: str, payload: Dict[str, Any], stream_key: Optional[str] = None) -> Dict[str, Any]:
         if not self.redis_url:
-            return {"ok": False, "skipped": True, "reason": "REDIS_URL not set"}
+            return {"ok": False, "skipped": True, "reason": "REDIS_URL not set or could not be built from component variables"}
         try:
             import redis  # type: ignore
 
@@ -175,7 +234,7 @@ class InfrastructureHub:
 
     def _postgres_status(self) -> Dict[str, Any]:
         if not self.postgres_url:
-            return {"configured": False, "ok": False, "reason": "DATABASE_URL/POSTGRES_URL not set"}
+            return {"configured": False, "ok": False, "reason": "DATABASE_URL/POSTGRES_URL not set or could not be built from component variables"}
         try:
             import psycopg  # type: ignore
 
@@ -215,7 +274,7 @@ class InfrastructureHub:
 
     def _postgres_insert_observation(self, observation_id: str, domain: str, vector: List[float], payload: Dict[str, Any]) -> Dict[str, Any]:
         if not self.postgres_url:
-            return {"ok": False, "skipped": True, "reason": "DATABASE_URL/POSTGRES_URL not set"}
+            return {"ok": False, "skipped": True, "reason": "DATABASE_URL/POSTGRES_URL not set or could not be built from component variables"}
         try:
             import psycopg  # type: ignore
             from psycopg.types.json import Jsonb  # type: ignore
@@ -241,7 +300,7 @@ class InfrastructureHub:
 
     def _postgres_insert_manifest(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if not self.postgres_url:
-            return {"ok": False, "skipped": True, "reason": "DATABASE_URL/POSTGRES_URL not set"}
+            return {"ok": False, "skipped": True, "reason": "DATABASE_URL/POSTGRES_URL not set or could not be built from component variables"}
         try:
             import psycopg  # type: ignore
             from psycopg.types.json import Jsonb  # type: ignore
