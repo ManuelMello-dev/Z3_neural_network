@@ -28,16 +28,17 @@ assert api.json().get("interface") == "/interface"
 assert api.json().get("world_model") == "/world-model"
 assert api.json().get("memory") == "/memory"
 assert api.json().get("runtime") == "/runtime"
-assert api.json().get("cern") == "/cern"
+assert api.json().get("language") == "/language"
 assert api.json().get("infra") == "/infra"
+assert api.json().get("chat") == "/chat"
 
 interface = client.get("/interface")
 assert interface.status_code == 200, interface.text
 assert "Integrated Observe" in interface.text
 assert "Autonomous Runtime" in interface.text
-assert "CERN Collision Stream" in interface.text
+assert "Language Training Stream" in interface.text
 assert "Infrastructure" in interface.text
-assert "CERN auto-ingest" in interface.text
+assert "Language auto-ingest" in interface.text
 
 health = client.get("/health")
 assert health.status_code == 200, health.text
@@ -82,12 +83,12 @@ state = client.get("/state")
 assert state.status_code == 200, state.text
 runtime = client.get("/runtime")
 assert runtime.status_code == 200, runtime.text
-cern = client.get("/cern")
-assert cern.status_code == 200, cern.text
-assert cern.json().get("dataset", {}).get("domain") == "cern:cms:dielectron"
+language = client.get("/language")
+assert language.status_code == 200, language.text
+assert language.json().get("dataset", {}).get("domain") == "language:corpus"
 assert "running" in runtime.json()
-assert "cern_schedule" in runtime.json()
-assert runtime.json()["cern_schedule"].get("enabled") is True
+assert "language_schedule" in runtime.json()
+assert runtime.json()["language_schedule"].get("enabled") is True
 infra = client.get("/infra")
 assert infra.status_code == 200, infra.text
 assert "volume" in infra.json()
@@ -104,16 +105,16 @@ runtime_start = client.post(
     json={
         "interval_seconds": 60,
         "autosave_every_ticks": 2,
-        "cern_enabled": True,
-        "cern_every_ticks": 3,
-        "cern_batch_size": 1,
-        "cern_train": False,
-        "cern_learning_rate": 0.001,
+        "language_enabled": True,
+        "language_every_ticks": 3,
+        "language_batch_size": 1,
+        "language_train": False,
+        "language_learning_rate": 0.001,
     },
 )
 assert runtime_start.status_code == 200, runtime_start.text
-assert runtime_start.json()["cern_schedule"]["every_ticks"] == 3
-assert runtime_start.json()["cern_schedule"]["batch_size"] == 1
+assert runtime_start.json()["language_schedule"]["every_ticks"] == 3
+assert runtime_start.json()["language_schedule"]["batch_size"] == 1
 runtime_stop = client.post("/runtime/stop")
 assert runtime_stop.status_code == 200, runtime_stop.text
 save = client.post("/state/save")

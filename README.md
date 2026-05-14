@@ -242,37 +242,37 @@ The autonomous loop can also be tuned with environment variables:
 
 This is the first step from a manual endpoint demo toward a continuously pulsing, memory-bearing runtime. The loop does not replace external observations; it keeps the system alive between observations by training on its own heartbeat state and preserving continuity through autosave.
 
-## CERN Open Data Training Stream
+## Language Training Stream
 
-The runtime can now use the same CERN-first proving stream from Cognitive Mesh, adapted as a standalone synchronous data source. The stream uses CERN Open Data record 304, `Events with two electrons from 2010`, DOI `10.7483/OPENDATA.CMS.PCSW.AHVG`, and converts CMS dielectron rows into generic Z³ observations.
+The runtime now uses language as the primary proving stream. `language_stream.py` reads real operator-supplied text from `LANGUAGE_TRAINING_CORPUS_PATH`, `LANGUAGE_TRAINING_TEXT`, or the persisted language cache and converts sentence-like units into generic Z³ observations.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/cern` | `GET` | Show CERN dataset/cache status without forcing a download. |
-| `/cern/load` | `POST` | Download/cache and load the CERN dielectron CSV. |
-| `/cern/fetch` | `POST` | Fetch a converted batch of CERN observations without ingesting them. |
-| `/cern/ingest` | `POST` | Fetch a batch and feed each collision event through world model, resonant memory, and Z³. |
+| `/language` | `GET` | Show language corpus/cache status. |
+| `/language/load` | `POST` | Load configured corpus text. |
+| `/language/fetch` | `POST` | Fetch converted language observations without ingesting them. |
+| `/language/ingest` | `POST` | Feed a language batch through world model, resonant memory, and Z³. |
+| `/chat` | `POST` | Send one live chatbox message into Z³ as `language:chat`. |
 
 Example:
 
 ```bash
-curl -X POST "$RAILWAY_PUBLIC_DOMAIN/cern/ingest" \
+curl -X POST "$RAILWAY_PUBLIC_DOMAIN/chat" \
   -H "Content-Type: application/json" \
-  -d '{"batch_size":5,"train":false,"persist":true}'
+  -d '{"message":"Hello Z³, observe this language interaction.","train":false,"persist":true}'
 ```
-
-The CERN stream can be configured with these environment variables:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CERN_COLLISION_DATA_URL` | CERN record 304 dielectron CSV | Source CSV URL. |
-| `CERN_COLLISION_CACHE` | `$Z3_STATE_DIR/cern_dielectron.csv` or `data/cern_dielectron.csv` | Local cache path. |
-| `CERN_COLLISION_BATCH_SIZE` | `25` | Default fetch/ingest batch size. |
-| `CERN_COLLISION_MAX_EVENTS` | `100000` | Maximum rows loaded from the CSV. |
-| `CERN_COLLISION_PRIMARY_VALUE` | `M` | Primary observable, default invariant mass. |
-| `CERN_COLLISION_SECONDARY_VALUE` | `pt1` | Secondary observable, default first electron transverse momentum. |
-
-This gives Z³ a real, structured, non-toy stream: invariant mass, particle energy, transverse momentum, pseudorapidity, azimuthal phase, charge, run/event IDs, and collision metadata. Ingested events become world-model latents, resonant memory rings, and neural Z³ training/runtime vectors.
+| `LANGUAGE_TRAINING_CORPUS_PATH` | empty | Path to a real text corpus file. |
+| `LANGUAGE_TRAINING_TEXT` | empty | Inline language text for quick live tests. |
+| `LANGUAGE_TRAINING_CACHE` | `$Z3_STATE_DIR/language_corpus.txt` | Persisted language corpus cache. |
+| `LANGUAGE_TRAINING_BATCH_SIZE` | `25` | Default fetch/ingest batch size. |
+| `Z3_RUNTIME_LANGUAGE_ENABLED` | `true` | Enables periodic language ingestion during autonomous ticks. |
+| `Z3_RUNTIME_LANGUAGE_EVERY_TICKS` | `10` | Runs language ingestion every N autonomous ticks. |
+| `Z3_RUNTIME_LANGUAGE_BATCH_SIZE` | `5` | Number of language segments ingested per scheduled batch. |
+| `Z3_RUNTIME_LANGUAGE_TRAIN` | `false` | If true, each language segment runs a train step. |
+| `Z3_RUNTIME_LANGUAGE_LR` | `0.001` | Learning rate used when scheduled language training is enabled. |
 
 ## Railway Infrastructure Wiring
 
@@ -280,8 +280,8 @@ The runtime now supports optional infrastructure services around the neural core
 
 | Railway service | Runtime role | Environment variables |
 |---|---|---|
-| Volume | Durable neural checkpoint, world-model state, resonant-memory state, and CERN CSV cache. | `Z3_STATE_DIR=/data` with a Railway volume mounted at `/data`. |
-| Qdrant | Long-term vector memory for integrated observations and CERN-derived latent vectors. | `QDRANT_URL`, optional `QDRANT_API_KEY`, optional `QDRANT_COLLECTION=z3_observations`. |
+| Volume | Durable neural checkpoint, world-model state, resonant-memory state, and language corpus cache. | `Z3_STATE_DIR=/data` with a Railway volume mounted at `/data`. |
+| Qdrant | Long-term vector memory for integrated observations and language-derived latent vectors. | `QDRANT_URL`, optional `QDRANT_API_KEY`, optional `QDRANT_COLLECTION=z3_observations`. |
 | Redis | Fast runtime coordination, latest observation cache, and lightweight observation stream. | `REDIS_URL` or `REDIS_PRIVATE_URL`. |
 | Postgres | Durable structured observation ledger and runtime manifest history. | `DATABASE_URL`, `POSTGRES_URL`, or `POSTGRES_PRIVATE_URL`. |
 
@@ -292,18 +292,5 @@ The new infrastructure endpoints are:
 | `/infra` | `GET` | Reports volume, Qdrant, Redis, and Postgres configuration/connectivity. |
 | `/infra/sync` | `POST` | Pushes a lightweight runtime snapshot to configured Redis/Postgres backends. |
 
-The integrated observation pathway now attempts to write each observation to the configured infrastructure backends after it passes through the world model, resonant memory, and Z³. This means `/observe`, manual CERN ingestion, and scheduled CERN ingestion can become durable across Qdrant, Redis, and Postgres when those Railway variables are connected.
+The integrated observation pathway now attempts to write each observation to the configured infrastructure backends after it passes through the world model, resonant memory, and Z³. This means `/observe`, manual language ingestion, chatbox interaction, and scheduled language ingestion can become durable across Qdrant, Redis, and Postgres when those Railway variables are connected.
 
-## Autonomous CERN Ingestion
-
-The autonomous runtime can now periodically ingest CERN collision batches during its heartbeat loop. The default environment behavior enables scheduled CERN ingestion unless explicitly disabled.
-
-| Variable | Default | Meaning |
-|---|---:|---|
-| `Z3_RUNTIME_CERN_ENABLED` | `true` | Enables periodic CERN ingestion during autonomous runtime ticks. |
-| `Z3_RUNTIME_CERN_EVERY_TICKS` | `10` | Runs CERN ingestion every N autonomous ticks. |
-| `Z3_RUNTIME_CERN_BATCH_SIZE` | `5` | Number of CERN events ingested per scheduled batch. |
-| `Z3_RUNTIME_CERN_TRAIN` | `false` | If true, each CERN event runs a train step; if false, each event runs an inference/update step. |
-| `Z3_RUNTIME_CERN_LR` | `0.001` | Learning rate used when scheduled CERN training is enabled. |
-
-The dashboard exposes these controls in the **Autonomous Runtime** panel. A safe first live setting is CERN auto-ingest enabled, every `10` ticks, batch size `5`, train set to `false`, and persistence handled by autosave. After the pipeline is stable, switch `CERN train?` to `true` for continuous learning from real collision events.

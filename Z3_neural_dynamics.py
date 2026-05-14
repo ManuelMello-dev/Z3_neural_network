@@ -18,7 +18,18 @@ model or using training helpers requires PyTorch.
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import asdict, dataclass
+
+# Compatibility for pre-final Python 3.11 builds used by some sandboxes. Newer
+# PyTorch imports torch._dynamo through optimizers and expects this stdlib helper.
+if not hasattr(sys, "get_int_max_str_digits"):
+    sys.get_int_max_str_digits = lambda: 4300  # type: ignore[attr-defined]
+if not hasattr(sys, "set_int_max_str_digits"):
+    def _set_int_max_str_digits(maxdigits: int) -> None:
+        return None
+    sys.set_int_max_str_digits = _set_int_max_str_digits  # type: ignore[attr-defined]
+
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 

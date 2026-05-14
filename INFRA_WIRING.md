@@ -4,8 +4,8 @@ The Railway project now has the right service topology for the next stage of the
 
 | Service | Runtime role | Primary data |
 |---|---|---|
-| Volume | Checkpoint and cache substrate | `z3_neural_dynamics.pt`, world-model JSON, resonant-memory JSON, CERN CSV cache. |
-| Qdrant | Long-term vector memory | World-model latent vectors, resonant-memory ring vectors, CERN event embeddings, future conversation embeddings. |
+| Volume | Checkpoint and cache substrate | `z3_neural_dynamics.pt`, world-model JSON, resonant-memory JSON, language corpus cache. |
+| Qdrant | Long-term vector memory | World-model latent vectors, resonant-memory ring vectors, language observation embeddings, future conversation embeddings. |
 | Redis | Fast runtime coordination | Heartbeat/tick status, recent event queue, lightweight locks, stream cursor hints. |
 | Postgres | Durable structured ledger | Observations, ingestion manifests, runtime ticks, state-save manifests, endpoint/audit metadata. |
 
