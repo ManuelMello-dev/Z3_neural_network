@@ -25,6 +25,7 @@ Novelty is computed as context-relative prediction error between emitted evidenc
 | `expected_evidence` | Predicts expected evidence from Z³ and context. |
 | `gamma` | Converts trusted local evidence into global Z³ proposal deltas. |
 | `prediction_head` | Predicts or reconstructs the target embedding for self-supervised grounding. |
+| `phi_balance` loss | Penalizes excessive concentration of learned per-agent φ gain so one Z-prime agent cannot become the default winner without paying an anti-monopoly cost. |
 
 ## Installation
 
@@ -49,6 +50,12 @@ projection = model.public_projection(output)
 
 print(projection["z_cubed_state"])
 ```
+
+## φ Anti-Monopoly Constraint
+
+The learned per-agent φ values remain positive attention/credibility gains, but the loss now includes an explicit concentration guard. The model normalizes φ across agents, computes a Herfindahl-style concentration score `sum(phi_weight ** 2)`, and penalizes only the portion above `phi_concentration_ratio_max / agent_count`. With the default `phi_concentration_ratio_max = 2.0`, φ can differentiate naturally, but its effective support is discouraged from collapsing below roughly half of the active agent pool.
+
+The regularizer appears in runtime metrics as `phi_balance`, `phi_concentration`, and `phi_effective_agents`. Its strength is controlled by `beta_phi_balance`, which defaults to `0.05`.
 
 ## Training Smoke Test
 

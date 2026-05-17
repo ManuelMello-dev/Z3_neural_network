@@ -79,6 +79,7 @@ class Z3Config:
     coherence_max: float = 0.92
     diversity_min: float = 0.35
     evidence_variance_min: float = 0.03
+    phi_concentration_ratio_max: float = 2.0
 
     beta_predictive: float = 1.0
     beta_coherence_band: float = 0.25
@@ -87,6 +88,7 @@ class Z3Config:
     beta_stability: float = 0.10
     beta_effort: float = 0.01
     beta_useful_novelty: float = 0.05
+    beta_phi_balance: float = 0.05
 
     @classmethod
     def predictive_runtime(cls, **overrides: Any) -> "Z3Config":
@@ -337,6 +339,15 @@ if torch is not None:
             stability = torch.mean((z3_next - z3).pow(2))
             effort = torch.mean((z_next - agents).pow(2)) + 0.1 * torch.mean(update_vector.pow(2))
             useful_novelty = torch.mean(gate * coherence * novelty)
+            phi_weights = self.phi / self.phi.sum().clamp_min(cfg.epsilon)
+            phi_concentration = torch.sum(phi_weights.pow(2))
+            phi_concentration_limit = torch.tensor(
+                cfg.phi_concentration_ratio_max / cfg.agent_count,
+                device=phi_concentration.device,
+                dtype=phi_concentration.dtype,
+            )
+            phi_balance = F.relu(phi_concentration - phi_concentration_limit).pow(2)
+            phi_effective_agents = 1.0 / phi_concentration.clamp_min(cfg.epsilon)
             total = (
                 cfg.beta_predictive * predictive
                 + cfg.beta_coherence_band * coherence_band
@@ -344,6 +355,7 @@ if torch is not None:
                 + cfg.beta_evidence_variance * evidence_variance
                 + cfg.beta_stability * stability
                 + cfg.beta_effort * effort
+                + cfg.beta_phi_balance * phi_balance
                 - cfg.beta_useful_novelty * useful_novelty
             )
             return {
@@ -355,6 +367,9 @@ if torch is not None:
                 "stability": stability,
                 "effort": effort,
                 "useful_novelty": useful_novelty,
+                "phi_balance": phi_balance,
+                "phi_concentration": phi_concentration.detach(),
+                "phi_effective_agents": phi_effective_agents.detach(),
                 "mean_pairwise_distance": pairwise_distance.detach(),
                 "raw_evidence_variance": evidence_variance_value.detach(),
             }

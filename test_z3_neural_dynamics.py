@@ -64,6 +64,7 @@ balanced_config = Z3Config.balanced(input_dim=8)
 
 check("Internal coherence preset down-weights prediction", coherence_config.beta_predictive < config.beta_predictive, coherence_config.beta_predictive)
 check("Balanced preset keeps prediction and coherence active", balanced_config.beta_predictive > 0 and balanced_config.beta_coherence_band > 0, balanced_config)
+check("Phi anti-monopoly regularizer is active", config.beta_phi_balance > 0.0 and config.phi_concentration_ratio_max >= 1.0, config)
 check("Initial phi starts near unit gain", bool(torch.allclose(model.phi, torch.ones_like(model.phi), atol=2e-4)), model.phi)
 check("Metric buffer size follows metric schema", tuple(model.last_metrics.shape) == (model.metric_count(),), model.last_metrics.shape)
 
@@ -81,12 +82,22 @@ check("Soft gates bounded", bool(torch.all(output["gate"] >= 0.0) and torch.all(
 check("Trust weights normalized", bool(torch.allclose(output["trust"].sum(dim=1), torch.ones(4), atol=1e-4)), output["trust"].sum(dim=1))
 check("Trust weights remain positive under floor", bool(torch.all(output["trust"] > 0.0)), output["trust"])
 check("Loss is finite", bool(torch.isfinite(output["losses"]["total"])), output["losses"]["total"])
+check("Phi balance loss is exposed", "phi_balance" in output["losses"] and "phi_effective_agents" in output["losses"], output["losses"].keys())
+check("Uniform phi has no monopoly penalty", bool(output["losses"]["phi_balance"] <= 1e-8), output["losses"]["phi_balance"])
 check("Metric vector matches schema", tuple(output["metrics"].shape) == (model.metric_count(),), output["metrics"].shape)
 
 zero_trust = torch.zeros(3, config.agent_count)
 zero_weights = model.normalize_trust(zero_trust)
 expected_uniform = torch.full_like(zero_weights, 1.0 / config.agent_count)
 check("Zero-trust fallback is uniform", bool(torch.allclose(zero_weights, expected_uniform, atol=1e-6)), zero_weights)
+
+with torch.no_grad():
+    model.raw_phi[:] = torch.tensor([5.0, -3.0, -3.0, -3.0], dtype=model.raw_phi.dtype)
+monopoly_output = model.forward(x[:2], target=y[:2], update_state=False, add_noise=False)
+check("Concentrated phi triggers anti-monopoly penalty", bool(monopoly_output["losses"]["phi_balance"] > 0.0), monopoly_output["losses"]["phi_balance"])
+model.reset_state(seed=11)
+with torch.no_grad():
+    model.raw_phi.fill_(torch.log(torch.expm1(torch.tensor(1.0))).item())
 
 states = torch.randn(2, config.agent_count, config.local_dim)
 distances = torch.cdist(states, states, p=2)
