@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from language_stream import LanguageStream
+from z3_language_training import train_z3_on_language_window
 from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
 from runtime_loop import AutonomousRuntimeLoop, RuntimeLoopConfig
@@ -57,6 +58,9 @@ _RUNTIME_LANGUAGE_CONFIG: Dict[str, Any] = {
     "batch_size": int(os.environ.get("Z3_RUNTIME_LANGUAGE_BATCH_SIZE", "5")),
     "train": os.environ.get("Z3_RUNTIME_LANGUAGE_TRAIN", "false").lower() in ("1", "true", "yes", "on"),
     "learning_rate": float(os.environ.get("Z3_RUNTIME_LANGUAGE_LR", "0.001")),
+    "window_size": int(os.environ.get("Z3_LANGUAGE_WINDOW_SIZE", "24")),
+    "stride": int(os.environ.get("Z3_LANGUAGE_STRIDE", "12")),
+    "truncation_steps": int(os.environ.get("Z3_LANGUAGE_TRUNCATION_STEPS", "16")),
 }
 
 
@@ -247,14 +251,44 @@ def _runtime_language_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _train_z3_on_language_observations(observations: List[Dict[str, Any]], *, learning_rate: float) -> Dict[str, Any]:
+    """Train Z³ directly on corpus text sequence windows, not only observation latents."""
+    texts = [str(obs.get("text") or obs.get("content") or "").strip() for obs in observations]
+    texts = [text for text in texts if text]
+    if not texts:
+        return {"trained": False, "reason": "no_text"}
+    model = get_model()
+    optimizer = _get_optimizer(model, learning_rate)
+    metrics = train_z3_on_language_window(
+        model,
+        optimizer,
+        texts,
+        truncation_steps=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("truncation_steps", 16))),
+        window_size=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("window_size", 24))),
+        stride=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("stride", 12))),
+        commit_recurrent_state=True,
+        add_noise=True,
+    )
+    return {
+        "trained": True,
+        "texts": len(texts),
+        "mode": "direct_language_sequence_window",
+        "metrics": metrics,
+    }
+
+
 def _ingest_language_batch_for_runtime(*, batch_size: int, train: bool, learning_rate: float) -> Dict[str, Any]:
     batch = _LANGUAGE_STREAM.fetch_batch(batch_size=batch_size)
+    observations = list(batch.get("observations", []))
+    language_training: Optional[Dict[str, Any]] = None
+    if train and observations:
+        language_training = _train_z3_on_language_observations(observations, learning_rate=learning_rate)
     results: List[Dict[str, Any]] = []
-    for observation in batch.get("observations", []):
+    for observation in observations:
         integrated = IntegratedObserveRequest(
             observation=observation,
             domain=batch.get("domain", LanguageStream.DEFAULT_DOMAIN),
-            train=train,
+            train=False,
             persist=False,
             learning_rate=learning_rate,
         )
@@ -265,6 +299,7 @@ def _ingest_language_batch_for_runtime(*, batch_size: int, train: bool, learning
         "count": len(results),
         "offset": batch.get("offset"),
         "summary": _runtime_language_summary(results),
+        "language_training": language_training,
         "sample_entity_ids": [
             item.get("world_model", {}).get("observation", {}).get("entity_id")
             for item in results[:5]

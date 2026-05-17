@@ -244,22 +244,24 @@ This is the first step from a manual endpoint demo toward a continuously pulsing
 
 ## Language Training Stream
 
-The runtime now uses language as the primary proving stream. `language_stream.py` reads real operator-supplied text from `LANGUAGE_TRAINING_CORPUS_PATH`, `LANGUAGE_TRAINING_TEXT`, or the persisted language cache and converts sentence-like units into generic Z³ observations.
+The runtime now has a real corpus ingestion stream. `language_stream.py` can read operator-supplied text from `LANGUAGE_TRAINING_CORPUS_PATH`, `LANGUAGE_TRAINING_TEXT`, or the persisted language cache, and it can also initialize a Hugging Face streaming dataset. By default, the remote corpus source is `manu/project_gutenberg` with split `en`.
+
+When `/language/ingest` or scheduled runtime language ingestion is called with `train=true`, the runtime no longer only trains on an observation latent. It calls `z3_language_training.train_z3_on_language_window()`, which converts raw text into temporal language windows and trains `Z3NeuralDynamics.train_sequence_window()` directly.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/language` | `GET` | Show language corpus/cache status. |
-| `/language/load` | `POST` | Load configured corpus text. |
+| `/language` | `GET` | Show language corpus/cache/remote-stream status. |
+| `/language/load` | `POST` | Load local corpus text or initialize the configured remote corpus stream. |
 | `/language/fetch` | `POST` | Fetch converted language observations without ingesting them. |
-| `/language/ingest` | `POST` | Feed a language batch through world model, resonant memory, and Z³. |
+| `/language/ingest` | `POST` | Feed a language batch through world model, resonant memory, and Z³; with `train=true`, also run direct corpus sequence training. |
 | `/chat` | `POST` | Send one live chatbox message into Z³ as `language:chat`. |
 
 Example:
 
 ```bash
-curl -X POST "$RAILWAY_PUBLIC_DOMAIN/chat" \
+curl -X POST "$RAILWAY_PUBLIC_DOMAIN/language/ingest" \
   -H "Content-Type: application/json" \
-  -d '{"message":"Hello Z³, observe this language interaction.","train":false,"persist":true}'
+  -d '{"batch_size":5,"train":true,"persist":true}'
 ```
 
 | Variable | Default | Meaning |
@@ -267,12 +269,20 @@ curl -X POST "$RAILWAY_PUBLIC_DOMAIN/chat" \
 | `LANGUAGE_TRAINING_CORPUS_PATH` | empty | Path to a real text corpus file. |
 | `LANGUAGE_TRAINING_TEXT` | empty | Inline language text for quick live tests. |
 | `LANGUAGE_TRAINING_CACHE` | `$Z3_STATE_DIR/language_corpus.txt` | Persisted language corpus cache. |
+| `LANGUAGE_TRAINING_DATASET` / `Z3_CORPUS_DATASET` | `manu/project_gutenberg` | Hugging Face dataset used when no local corpus is configured. |
+| `LANGUAGE_TRAINING_DATASET_SPLIT` / `Z3_CORPUS_DATASET_SPLIT` | `en` | Dataset split for remote corpus streaming. |
+| `LANGUAGE_TRAINING_TEXT_FIELD` / `Z3_CORPUS_TEXT_FIELD` | `text` | Text field to read from remote dataset rows. |
+| `DISABLE_REMOTE_CORPUS_STREAM` | empty | Set to `1` to disable remote dataset streaming. |
 | `LANGUAGE_TRAINING_BATCH_SIZE` | `25` | Default fetch/ingest batch size. |
+| `LANGUAGE_TRAINING_MIN_WORDS` | `24` | Minimum words required before a corpus segment is emitted. |
 | `Z3_RUNTIME_LANGUAGE_ENABLED` | `true` | Enables periodic language ingestion during autonomous ticks. |
 | `Z3_RUNTIME_LANGUAGE_EVERY_TICKS` | `10` | Runs language ingestion every N autonomous ticks. |
 | `Z3_RUNTIME_LANGUAGE_BATCH_SIZE` | `5` | Number of language segments ingested per scheduled batch. |
-| `Z3_RUNTIME_LANGUAGE_TRAIN` | `false` | If true, each language segment runs a train step. |
+| `Z3_RUNTIME_LANGUAGE_TRAIN` | `false` | If true, scheduled language ingestion trains directly on text sequence windows. |
 | `Z3_RUNTIME_LANGUAGE_LR` | `0.001` | Learning rate used when scheduled language training is enabled. |
+| `Z3_LANGUAGE_WINDOW_SIZE` | `24` | Token window size for direct corpus sequence training. |
+| `Z3_LANGUAGE_STRIDE` | `12` | Token stride for direct corpus sequence training. |
+| `Z3_LANGUAGE_TRUNCATION_STEPS` | `16` | Truncated BPTT length for direct language sequence training. |
 
 ## Railway Infrastructure Wiring
 
