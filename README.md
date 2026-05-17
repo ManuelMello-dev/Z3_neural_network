@@ -57,6 +57,14 @@ The learned per-agent φ values remain positive attention/credibility gains, but
 
 The regularizer appears in runtime metrics as `phi_balance`, `phi_concentration`, and `phi_effective_agents`. Its strength is controlled by `beta_phi_balance`, which defaults to `0.05`.
 
+## Boundary Calibration Upgrades
+
+The neural core now includes three additional guardrails for the activation boundary. First, `boot_projection` is regularized with `boot_context` and `boot_variance` losses so the local target manifold remains context-sensitive instead of collapsing into a trivial Z³-only projection. The context-sensitivity check compares `B(Z³, context)` against `B(Z³, 0)`, while the variance floor discourages batch-level target collapse.
+
+Second, the gate thresholds are context-adaptive. A bounded `threshold_adapter` maps encoded context into per-sample adjustments for `theta_novelty`, `theta_coherence`, `tau_novelty`, and `tau_coherence`. The deltas are clamped through `threshold_delta_max`, `tau_delta_max`, and `tau_min`, and `gate_rate_band` penalizes threshold settings that make the gate nearly always closed or nearly always open.
+
+Third, the runtime maintains `rare_expert_credit`, an exponential moving average of each agent's gated coherent novelty. During trust normalization, a small `rare_expert_trust_bonus` gives historically useful but infrequent agents a residual path to contribute, reducing the risk that frequent medium-value gate passage crowds out rarer high-value insight.
+
 ## Training Smoke Test
 
 ```python

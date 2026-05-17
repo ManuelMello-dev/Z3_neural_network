@@ -73,6 +73,12 @@ class Z3Config:
     theta_coherence: float = 0.30
     tau_novelty: float = 0.12
     tau_coherence: float = 0.10
+    adaptive_thresholds: bool = True
+    threshold_delta_max: float = 0.15
+    tau_delta_max: float = 0.05
+    tau_min: float = 0.03
+    gate_rate_min: float = 0.08
+    gate_rate_max: float = 0.85
     epsilon: float = 1e-6
 
     coherence_min: float = 0.35
@@ -80,6 +86,10 @@ class Z3Config:
     diversity_min: float = 0.35
     evidence_variance_min: float = 0.03
     phi_concentration_ratio_max: float = 2.0
+    boot_context_sensitivity_min: float = 0.01
+    boot_variance_min: float = 0.005
+    rare_expert_decay: float = 0.95
+    rare_expert_trust_bonus: float = 0.05
 
     beta_predictive: float = 1.0
     beta_coherence_band: float = 0.25
@@ -89,6 +99,9 @@ class Z3Config:
     beta_effort: float = 0.01
     beta_useful_novelty: float = 0.05
     beta_phi_balance: float = 0.05
+    beta_boot_context: float = 0.05
+    beta_boot_variance: float = 0.05
+    beta_gate_rate: float = 0.03
 
     @classmethod
     def predictive_runtime(cls, **overrides: Any) -> "Z3Config":
@@ -159,6 +172,7 @@ if torch is not None:
 
             self.context_encoder = MLP(cfg.input_dim, cfg.context_dim, cfg.hidden_dim)
             self.boot_projection = MLP(cfg.state_dim + cfg.context_dim, cfg.local_dim, cfg.hidden_dim)
+            self.threshold_adapter = MLP(cfg.context_dim, 4, cfg.hidden_dim)
             self.agent_embeddings = nn.Embedding(cfg.agent_count, cfg.agent_embed_dim)
 
             transition_in = cfg.local_dim + cfg.local_dim + cfg.context_dim + cfg.agent_embed_dim + cfg.state_dim
@@ -179,6 +193,7 @@ if torch is not None:
             self.register_buffer("z3_state", torch.zeros(cfg.state_dim))
             self.register_buffer("zprime_state", torch.empty(0))
             self.register_buffer("last_metrics", torch.zeros(self.metric_count()))
+            self.register_buffer("rare_expert_credit", torch.zeros(cfg.agent_count))
             self.reset_state()
 
         @property
@@ -228,6 +243,7 @@ if torch is not None:
             z3_context = z3.unsqueeze(1).expand(-1, cfg.agent_count, -1)
             context_agents = context.unsqueeze(1).expand(-1, cfg.agent_count, -1)
             boot_target = self.boot_projection(torch.cat([z3, context], dim=-1))
+            boot_target_z3_only = self.boot_projection(torch.cat([z3, torch.zeros_like(context)], dim=-1))
             target_agents = boot_target.unsqueeze(1).expand(-1, cfg.agent_count, -1)
 
             attraction = target_agents - agents
@@ -251,12 +267,17 @@ if torch is not None:
             novelty = torch.norm(evidence - expected, dim=-1)
             distance = torch.norm(z_next - target_agents, dim=-1)
             coherence = torch.exp(-cfg.lambda_coherence * distance)
-            gate_soft = torch.sigmoid((novelty - cfg.theta_novelty) / cfg.tau_novelty) * torch.sigmoid(
-                (coherence - cfg.theta_coherence) / cfg.tau_coherence
+            theta_novelty, theta_coherence, tau_novelty, tau_coherence = self.contextual_thresholds(context)
+            gate_soft = torch.sigmoid((novelty - theta_novelty) / tau_novelty) * torch.sigmoid(
+                (coherence - theta_coherence) / tau_coherence
             )
             gate = (gate_soft > 0.5).float() if hard_gate else gate_soft
 
+            credit = self.rare_expert_credit.to(device).view(1, cfg.agent_count)
+            credit_norm = credit / credit.sum(dim=1, keepdim=True).clamp_min(cfg.epsilon)
             trust = gate * self.phi.view(1, cfg.agent_count) * coherence
+            if cfg.rare_expert_trust_bonus > 0.0:
+                trust = trust + cfg.rare_expert_trust_bonus * credit_norm * coherence
             weights = self.normalize_trust(trust)
 
             proposal_input = torch.cat([evidence, z3_context, context_agents], dim=-1)
@@ -280,11 +301,19 @@ if torch is not None:
                 coherence=coherence,
                 novelty=novelty,
                 gate=gate,
+                gate_soft=gate_soft,
                 update_vector=update_vector,
+                boot_target=boot_target,
+                boot_target_z3_only=boot_target_z3_only,
+                theta_novelty_eff=theta_novelty,
+                theta_coherence_eff=theta_coherence,
+                tau_novelty_eff=tau_novelty,
+                tau_coherence_eff=tau_coherence,
             )
             metrics = self.compute_metrics(coherence, novelty, gate, z3, z3_next, z_next, evidence, losses)
+            agent_utility = (gate_soft * coherence * novelty).detach()
             if update_state:
-                self._commit_state(z3_next, z_next, metrics)
+                self._commit_state(z3_next, z_next, metrics, agent_utility)
 
             return {
                 "z3_before": z3,
@@ -293,6 +322,13 @@ if torch is not None:
                 "agents_after": z_next,
                 "context": context,
                 "boot_target": boot_target,
+                "boot_target_z3_only": boot_target_z3_only,
+                "theta_novelty_eff": theta_novelty,
+                "theta_coherence_eff": theta_coherence,
+                "tau_novelty_eff": tau_novelty,
+                "tau_coherence_eff": tau_coherence,
+                "rare_expert_credit": self.rare_expert_credit.detach().clone(),
+                "agent_utility": agent_utility,
                 "evidence": evidence,
                 "expected": expected,
                 "novelty": novelty,
@@ -320,7 +356,14 @@ if torch is not None:
             coherence: torch.Tensor,
             novelty: torch.Tensor,
             gate: torch.Tensor,
+            gate_soft: torch.Tensor,
             update_vector: torch.Tensor,
+            boot_target: torch.Tensor,
+            boot_target_z3_only: torch.Tensor,
+            theta_novelty_eff: torch.Tensor,
+            theta_coherence_eff: torch.Tensor,
+            tau_novelty_eff: torch.Tensor,
+            tau_coherence_eff: torch.Tensor,
         ) -> Dict[str, torch.Tensor]:
             """Compute the anti-collapse training objective."""
             cfg = self.config
@@ -348,6 +391,24 @@ if torch is not None:
             )
             phi_balance = F.relu(phi_concentration - phi_concentration_limit).pow(2)
             phi_effective_agents = 1.0 / phi_concentration.clamp_min(cfg.epsilon)
+            boot_context_sensitivity = torch.norm(boot_target - boot_target_z3_only, dim=-1).mean()
+            boot_context = F.relu(
+                torch.tensor(cfg.boot_context_sensitivity_min, device=boot_target.device, dtype=boot_target.dtype)
+                - boot_context_sensitivity
+            ).pow(2)
+            if boot_target.shape[0] > 1:
+                boot_variance_value = boot_target.var(dim=0, unbiased=False).mean()
+            else:
+                boot_variance_value = boot_target.new_tensor(cfg.boot_variance_min)
+            boot_variance = F.relu(
+                torch.tensor(cfg.boot_variance_min, device=boot_target.device, dtype=boot_target.dtype) - boot_variance_value
+            ).pow(2)
+            gate_rate = gate_soft.mean()
+            gate_rate_band = (
+                F.relu(torch.tensor(cfg.gate_rate_min, device=gate_soft.device, dtype=gate_soft.dtype) - gate_rate).pow(2)
+                + F.relu(gate_rate - torch.tensor(cfg.gate_rate_max, device=gate_soft.device, dtype=gate_soft.dtype)).pow(2)
+            )
+            threshold_variance = theta_novelty_eff.var(unbiased=False) + theta_coherence_eff.var(unbiased=False)
             total = (
                 cfg.beta_predictive * predictive
                 + cfg.beta_coherence_band * coherence_band
@@ -356,6 +417,9 @@ if torch is not None:
                 + cfg.beta_stability * stability
                 + cfg.beta_effort * effort
                 + cfg.beta_phi_balance * phi_balance
+                + cfg.beta_boot_context * boot_context
+                + cfg.beta_boot_variance * boot_variance
+                + cfg.beta_gate_rate * gate_rate_band
                 - cfg.beta_useful_novelty * useful_novelty
             )
             return {
@@ -370,6 +434,17 @@ if torch is not None:
                 "phi_balance": phi_balance,
                 "phi_concentration": phi_concentration.detach(),
                 "phi_effective_agents": phi_effective_agents.detach(),
+                "boot_context": boot_context,
+                "boot_context_sensitivity": boot_context_sensitivity.detach(),
+                "boot_variance": boot_variance,
+                "raw_boot_variance": boot_variance_value.detach(),
+                "gate_rate_band": gate_rate_band,
+                "gate_rate": gate_rate.detach(),
+                "mean_theta_novelty": theta_novelty_eff.mean().detach(),
+                "mean_theta_coherence": theta_coherence_eff.mean().detach(),
+                "mean_tau_novelty": tau_novelty_eff.mean().detach(),
+                "mean_tau_coherence": tau_coherence_eff.mean().detach(),
+                "threshold_variance": threshold_variance.detach(),
                 "mean_pairwise_distance": pairwise_distance.detach(),
                 "raw_evidence_variance": evidence_variance_value.detach(),
             }
@@ -482,7 +557,7 @@ if torch is not None:
 
             if commit_recurrent_state and final_output is not None:
                 with torch.no_grad():
-                    self._commit_state(z3, agents, final_output["metrics"])
+                    self._commit_state(z3, agents, final_output["metrics"], final_output.get("agent_utility"))
 
             summary = dict(chunk_metrics[-1]) if chunk_metrics else {}
             if chunk_losses:
@@ -537,7 +612,7 @@ if torch is not None:
             """Load a saved Z³ neural dynamics checkpoint."""
             payload = torch.load(path, map_location=map_location)
             model = cls(Z3Config(**payload["config"]))
-            model.load_state_dict(payload["state_dict"])
+            model.load_state_dict(payload["state_dict"], strict=False)
             device = next(model.parameters()).device
             model.z3_state = payload["z3_state"].to(device)
             model.zprime_state = payload["zprime_state"].to(device)
@@ -636,11 +711,41 @@ if torch is not None:
                 raise ValueError(f"agents must have shape [{batch}, {cfg.agent_count}, {cfg.local_dim}], got {tuple(agents.shape)}")
             return agents
 
+        def contextual_thresholds(self, context: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            """Return bounded context-adaptive novelty/coherence thresholds and temperatures."""
+            cfg = self.config
+            if not cfg.adaptive_thresholds:
+                batch = context.shape[0]
+                theta_novelty = context.new_full((batch, 1), cfg.theta_novelty)
+                theta_coherence = context.new_full((batch, 1), cfg.theta_coherence)
+                tau_novelty = context.new_full((batch, 1), cfg.tau_novelty)
+                tau_coherence = context.new_full((batch, 1), cfg.tau_coherence)
+                return theta_novelty, theta_coherence, tau_novelty, tau_coherence
+            raw = torch.tanh(self.threshold_adapter(context))
+            theta_novelty = (cfg.theta_novelty + cfg.threshold_delta_max * raw[:, 0:1]).clamp(0.0, 1.5)
+            theta_coherence = (cfg.theta_coherence + cfg.threshold_delta_max * raw[:, 1:2]).clamp(0.0, 1.0)
+            tau_novelty = (cfg.tau_novelty + cfg.tau_delta_max * raw[:, 2:3]).clamp_min(cfg.tau_min)
+            tau_coherence = (cfg.tau_coherence + cfg.tau_delta_max * raw[:, 3:4]).clamp_min(cfg.tau_min)
+            return theta_novelty, theta_coherence, tau_novelty, tau_coherence
+
         @torch.no_grad()
-        def _commit_state(self, z3_next: torch.Tensor, z_next: torch.Tensor, metrics: torch.Tensor) -> None:
+        def _commit_state(
+            self,
+            z3_next: torch.Tensor,
+            z_next: torch.Tensor,
+            metrics: torch.Tensor,
+            agent_utility: Optional[torch.Tensor] = None,
+        ) -> None:
             self.z3_state = z3_next.mean(dim=0).detach()
             self.zprime_state = z_next.mean(dim=0).detach()
             self.last_metrics = metrics.detach()
+            if agent_utility is not None:
+                cfg = self.config
+                observed_credit = agent_utility.mean(dim=0).detach().to(self.rare_expert_credit.device)
+                self.rare_expert_credit = (
+                    cfg.rare_expert_decay * self.rare_expert_credit
+                    + (1.0 - cfg.rare_expert_decay) * observed_credit
+                )
 
         @staticmethod
         def metric_names() -> Tuple[str, ...]:
