@@ -5,89 +5,2296 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Z³ Neural Runtime</title>
   <style>
-    :root{color-scheme:dark;--bg:#070a12;--panel:#101827;--panel2:#0b111d;--line:rgba(255,255,255,.12);--text:#edf4ff;--muted:#9aa9bd;--accent:#89dceb;--good:#b4f0a7;--warn:#ffd180;--bad:#ff8a9a;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 0 0,rgba(137,220,235,.18),transparent 34%),var(--bg);color:var(--text)}header{padding:34px 18px 20px;border-bottom:1px solid var(--line);background:linear-gradient(135deg,rgba(16,24,39,.95),rgba(7,10,18,.78))}h1{margin:0 0 10px;font-size:clamp(2rem,9vw,4rem);line-height:1;letter-spacing:-.05em}header p{margin:0;color:var(--muted);line-height:1.55;max-width:920px}main{padding:18px;display:grid;gap:16px}.status{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.metric,.card{background:rgba(16,24,39,.92);border:1px solid var(--line);border-radius:18px;box-shadow:0 16px 40px rgba(0,0,0,.28)}.metric{padding:14px}.metric span{display:block;color:var(--muted);font-size:.72rem;text-transform:uppercase;letter-spacing:.08em}.metric strong{display:block;margin-top:6px;color:var(--good);font-size:1.12rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,390px),1fr));gap:16px}.card{overflow:hidden}.card h2{margin:0;padding:16px 16px 6px;font-size:1.05rem}.method{color:var(--accent);font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.body{padding:0 16px 16px}.help{color:var(--muted);line-height:1.45;margin:6px 0 12px}label{display:block;color:var(--muted);font-size:.82rem;margin:10px 0 5px}textarea,input,select{width:100%;background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:11px;font:0.88rem ui-monospace,SFMono-Regular,Consolas,monospace}textarea{min-height:110px;resize:vertical}.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}button,a.btn{border:0;border-radius:999px;background:linear-gradient(135deg,#73daca,#89dceb);color:#06101a;font-weight:800;padding:10px 14px;margin:10px 8px 0 0;display:inline-flex;text-decoration:none;cursor:pointer}button.secondary,a.btn.secondary{background:#202a3c;color:var(--text);border:1px solid var(--line)}button:disabled{opacity:.55;cursor:wait}pre{margin:12px 0 0;padding:12px;background:#050812;border:1px solid var(--line);border-radius:14px;overflow:auto;max-height:360px;font-size:.78rem;line-height:1.45}.wide{grid-column:1/-1}.bad{color:var(--bad)}code{color:var(--accent)}footer{padding:4px 18px 30px;color:var(--muted)}@media(min-width:900px){header{padding-left:46px}main{padding:24px 46px}.status{grid-template-columns:repeat(4,1fr)}}
+    /* ============================================================
+       DESIGN PHILOSOPHY: Xenomorphic Void Intelligence
+       Movement: Post-Human Bioluminescent Minimalism
+       Color: Deep void (#03050d) with teal-cyan plasma glows,
+              ghost-white text, amber warnings, crimson alerts.
+       Typography: Space Grotesk (headings) + JetBrains Mono (data)
+       Layout: Asymmetric sidebar + scrollable main canvas
+       Signature: Animated neural field canvas, glowing ring metrics,
+                  frosted-glass panels with chromatic borders
+    ============================================================ */
+
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap');
+
+    :root {
+      --void: #03050d;
+      --deep: #070b18;
+      --surface: rgba(8, 14, 30, 0.82);
+      --surface2: rgba(5, 10, 22, 0.92);
+      --border: rgba(0, 210, 200, 0.12);
+      --border-glow: rgba(0, 210, 200, 0.35);
+      --plasma: #00d2c8;
+      --plasma-dim: rgba(0, 210, 200, 0.6);
+      --plasma-ghost: rgba(0, 210, 200, 0.08);
+      --text: #e8f4f8;
+      --text-dim: #7a9aaa;
+      --text-ghost: #3a5060;
+      --good: #4dffa0;
+      --good-dim: rgba(77, 255, 160, 0.15);
+      --warn: #ffb84d;
+      --warn-dim: rgba(255, 184, 77, 0.15);
+      --bad: #ff4d6d;
+      --bad-dim: rgba(255, 77, 109, 0.15);
+      --zprime: #b87fff;
+      --zprime-dim: rgba(184, 127, 255, 0.15);
+      --font-head: 'Space Grotesk', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font-head);
+      background: var(--void);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Neural field canvas background ── */
+    #neural-canvas {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      opacity: 0.45;
+    }
+
+    /* ── Layout shell ── */
+    #app {
+      position: relative;
+      z-index: 1;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      grid-template-rows: auto 1fr;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    #header {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 18px 32px;
+      border-bottom: 1px solid var(--border);
+      background: linear-gradient(90deg, rgba(0,210,200,0.04) 0%, transparent 60%);
+      backdrop-filter: blur(20px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .logo-mark {
+      width: 42px;
+      height: 42px;
+      flex-shrink: 0;
+      position: relative;
+    }
+
+    .logo-mark svg { width: 100%; height: 100%; }
+
+    #header h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      background: linear-gradient(135deg, #e8f4f8 30%, var(--plasma) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    #header .subtitle {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-top: 2px;
+    }
+
+    .header-status {
+      margin-left: auto;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-dim);
+      backdrop-filter: blur(10px);
+    }
+
+    .status-pill .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-ghost);
+      transition: background 0.4s, box-shadow 0.4s;
+    }
+
+    .status-pill.online .dot { background: var(--good); box-shadow: 0 0 8px var(--good); }
+    .status-pill.degraded .dot { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+    .status-pill.offline .dot { background: var(--bad); box-shadow: 0 0 8px var(--bad); }
+
+    /* ── Sidebar nav ── */
+    #sidebar {
+      grid-row: 2;
+      padding: 24px 16px;
+      border-right: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(0,210,200,0.03) 0%, transparent 100%);
+      backdrop-filter: blur(10px);
+      overflow-y: auto;
+      position: sticky;
+      top: 73px;
+      height: calc(100vh - 73px);
+    }
+
+    .nav-section {
+      margin-bottom: 28px;
+    }
+
+    .nav-section-label {
+      font-family: var(--font-mono);
+      font-size: 0.6rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-ghost);
+      padding: 0 8px;
+      margin-bottom: 8px;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 0.83rem;
+      font-weight: 500;
+      color: var(--text-dim);
+      border: 1px solid transparent;
+      transition: all 0.2s;
+      margin-bottom: 2px;
+    }
+
+    .nav-item:hover {
+      background: var(--plasma-ghost);
+      color: var(--text);
+      border-color: var(--border);
+    }
+
+    .nav-item.active {
+      background: rgba(0, 210, 200, 0.1);
+      color: var(--plasma);
+      border-color: var(--border-glow);
+      box-shadow: 0 0 16px rgba(0, 210, 200, 0.08);
+    }
+
+    .nav-item .nav-icon {
+      width: 18px;
+      height: 18px;
+      opacity: 0.7;
+      flex-shrink: 0;
+    }
+
+    .nav-item.active .nav-icon { opacity: 1; }
+
+    .method-badge {
+      margin-left: auto;
+      font-family: var(--font-mono);
+      font-size: 0.58rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    .badge-get { background: rgba(77, 255, 160, 0.12); color: var(--good); }
+    .badge-post { background: rgba(0, 210, 200, 0.12); color: var(--plasma); }
+
+    /* ── Main content ── */
+    #main {
+      grid-row: 2;
+      padding: 28px 32px;
+      overflow-y: auto;
+    }
+
+    /* ── Metric strip ── */
+    #metric-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .metric-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px 16px;
+      backdrop-filter: blur(12px);
+      position: relative;
+      overflow: hidden;
+      transition: border-color 0.3s;
+    }
+
+    .metric-card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--plasma-dim), transparent);
+      opacity: 0;
+      transition: opacity 0.4s;
+    }
+
+    .metric-card:hover::before { opacity: 1; }
+
+    .metric-label {
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-ghost);
+      margin-bottom: 8px;
+    }
+
+    .metric-value {
+      font-family: var(--font-mono);
+      font-size: 1.1rem;
+      font-weight: 500;
+      color: var(--plasma);
+    }
+
+    .metric-value.good { color: var(--good); }
+    .metric-value.warn { color: var(--warn); }
+    .metric-value.bad { color: var(--bad); }
+
+    /* ── Panels ── */
+    .panel {
+      display: none;
+      animation: fadeIn 0.25s ease;
+    }
+
+    .panel.active { display: block; }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .panel-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      letter-spacing: -0.03em;
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .panel-title .endpoint-tag {
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      font-weight: 400;
+      padding: 3px 8px;
+      border-radius: 6px;
+      background: rgba(0, 210, 200, 0.1);
+      color: var(--plasma);
+      border: 1px solid var(--border-glow);
+    }
+
+    .panel-desc {
+      font-size: 0.84rem;
+      color: var(--text-dim);
+      line-height: 1.6;
+      margin-bottom: 24px;
+      max-width: 680px;
+    }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      overflow: hidden;
+      backdrop-filter: blur(14px);
+      margin-bottom: 16px;
+      transition: border-color 0.3s;
+    }
+
+    .card:hover { border-color: rgba(0, 210, 200, 0.22); }
+
+    .card-header {
+      padding: 16px 20px 12px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .card-header h3 {
+      font-size: 0.92rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+    }
+
+    .card-body { padding: 18px 20px; }
+
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+      gap: 16px;
+    }
+
+    /* ── Form elements ── */
+    label {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-ghost);
+      margin-bottom: 6px;
+      margin-top: 14px;
+    }
+
+    label:first-child { margin-top: 0; }
+
+    input, textarea, select {
+      width: 100%;
+      background: rgba(3, 5, 13, 0.8);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+      -webkit-appearance: none;
+    }
+
+    input:focus, textarea:focus, select:focus {
+      border-color: var(--border-glow);
+      box-shadow: 0 0 0 3px rgba(0, 210, 200, 0.07);
+    }
+
+    textarea { min-height: 100px; resize: vertical; line-height: 1.5; }
+
+    select option { background: var(--deep); }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+      gap: 12px;
+    }
+
+    /* ── Buttons ── */
+    .btn-group { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+
+    button, .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 18px;
+      border-radius: 999px;
+      border: none;
+      font-family: var(--font-head);
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      text-decoration: none;
+    }
+
+    button.primary {
+      background: linear-gradient(135deg, rgba(0,210,200,0.9), rgba(0,180,170,0.9));
+      color: #03050d;
+      box-shadow: 0 0 20px rgba(0, 210, 200, 0.25);
+    }
+
+    button.primary:hover {
+      box-shadow: 0 0 30px rgba(0, 210, 200, 0.45);
+      transform: translateY(-1px);
+    }
+
+    button.secondary {
+      background: rgba(255,255,255,0.04);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+    }
+
+    button.secondary:hover {
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+      border-color: var(--border-glow);
+    }
+
+    button.danger {
+      background: rgba(255, 77, 109, 0.12);
+      color: var(--bad);
+      border: 1px solid rgba(255, 77, 109, 0.25);
+    }
+
+    button.danger:hover {
+      background: rgba(255, 77, 109, 0.2);
+      box-shadow: 0 0 16px rgba(255, 77, 109, 0.2);
+    }
+
+    button.success {
+      background: rgba(77, 255, 160, 0.1);
+      color: var(--good);
+      border: 1px solid rgba(77, 255, 160, 0.25);
+    }
+
+    button.success:hover {
+      background: rgba(77, 255, 160, 0.18);
+      box-shadow: 0 0 16px rgba(77, 255, 160, 0.2);
+    }
+
+    button:disabled { opacity: 0.4; cursor: wait; transform: none !important; }
+
+    a.btn-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 18px;
+      border-radius: 999px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      background: rgba(255,255,255,0.04);
+      color: var(--text-dim);
+      border: 1px solid var(--border);
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+
+    a.btn-link:hover {
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+      border-color: var(--border-glow);
+    }
+
+    /* ── Output pre ── */
+    .output-block {
+      margin-top: 16px;
+      background: rgba(3, 5, 13, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .output-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border);
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-ghost);
+    }
+
+    .output-status {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .output-status .dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--text-ghost);
+    }
+
+    .output-status.ok .dot { background: var(--good); }
+    .output-status.err .dot { background: var(--bad); }
+    .output-status.loading .dot {
+      background: var(--plasma);
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    pre.output {
+      padding: 14px;
+      overflow: auto;
+      max-height: 380px;
+      font-family: var(--font-mono);
+      font-size: 0.76rem;
+      line-height: 1.6;
+      color: var(--text-dim);
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    pre.output.bad { color: var(--bad); }
+
+    /* ── JSON syntax highlighting ── */
+    .json-key { color: var(--plasma); }
+    .json-str { color: var(--good); }
+    .json-num { color: var(--warn); }
+    .json-bool { color: var(--zprime); }
+    .json-null { color: var(--text-ghost); }
+
+    /* ── Chat panel ── */
+    .chat-window {
+      background: rgba(3, 5, 13, 0.9);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      min-height: 240px;
+      max-height: 420px;
+      overflow-y: auto;
+      padding: 16px;
+      margin-bottom: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .chat-msg {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+
+    .chat-msg.user { flex-direction: row-reverse; }
+
+    .chat-avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 700;
+    }
+
+    .chat-msg.user .chat-avatar {
+      background: rgba(0, 210, 200, 0.15);
+      border: 1px solid var(--border-glow);
+      color: var(--plasma);
+    }
+
+    .chat-msg.z3 .chat-avatar {
+      background: rgba(184, 127, 255, 0.15);
+      border: 1px solid rgba(184, 127, 255, 0.35);
+      color: var(--zprime);
+    }
+
+    .chat-bubble {
+      max-width: 75%;
+      padding: 10px 14px;
+      border-radius: 14px;
+      font-size: 0.84rem;
+      line-height: 1.55;
+    }
+
+    .chat-msg.user .chat-bubble {
+      background: rgba(0, 210, 200, 0.1);
+      border: 1px solid var(--border-glow);
+      color: var(--text);
+      border-top-right-radius: 4px;
+    }
+
+    .chat-msg.z3 .chat-bubble {
+      background: rgba(184, 127, 255, 0.08);
+      border: 1px solid rgba(184, 127, 255, 0.2);
+      color: var(--text-dim);
+      border-top-left-radius: 4px;
+    }
+
+    .chat-meta {
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      color: var(--text-ghost);
+      margin-top: 4px;
+    }
+
+    .chat-input-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .chat-input-row textarea {
+      flex: 1;
+      min-height: 48px;
+      max-height: 120px;
+      resize: none;
+    }
+
+    /* ── Coherence ring visualization ── */
+    .coherence-ring-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px 0;
+    }
+
+    .coherence-ring {
+      position: relative;
+      width: 120px;
+      height: 120px;
+    }
+
+    .coherence-ring svg {
+      width: 100%;
+      height: 100%;
+      transform: rotate(-90deg);
+    }
+
+    .coherence-ring .ring-track {
+      fill: none;
+      stroke: rgba(0, 210, 200, 0.08);
+      stroke-width: 6;
+    }
+
+    .coherence-ring .ring-fill {
+      fill: none;
+      stroke: var(--plasma);
+      stroke-width: 6;
+      stroke-linecap: round;
+      stroke-dasharray: 283;
+      stroke-dashoffset: 283;
+      transition: stroke-dashoffset 1s ease, stroke 0.5s;
+      filter: drop-shadow(0 0 4px var(--plasma));
+    }
+
+    .coherence-ring .ring-center {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+    }
+
+    .ring-value {
+      font-size: 1.3rem;
+      font-weight: 500;
+      color: var(--plasma);
+    }
+
+    .ring-label {
+      font-size: 0.6rem;
+      color: var(--text-ghost);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(0, 210, 200, 0.2); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(0, 210, 200, 0.4); }
+
+    /* ── Divider ── */
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 20px 0;
+    }
+
+    /* ── Loading shimmer ── */
+    .shimmer {
+      background: linear-gradient(90deg, rgba(255,255,255,0.02) 25%, rgba(0,210,200,0.06) 50%, rgba(255,255,255,0.02) 75%);
+      background-size: 200% 100%;
+      animation: shimmer 1.5s infinite;
+    }
+
+    @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+
+    /* ── Responsive ── */
+    @media (max-width: 768px) {
+      #app { grid-template-columns: 1fr; }
+      #sidebar {
+        grid-row: auto;
+        position: static;
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        padding: 12px 16px;
+      }
+      .nav-section { margin-bottom: 8px; }
+      .nav-item { display: inline-flex; margin-right: 4px; margin-bottom: 4px; }
+      #main { padding: 20px 16px; }
+    }
+
+    /* ── Glow effects ── */
+    .glow-plasma { text-shadow: 0 0 20px rgba(0, 210, 200, 0.6); }
+    .glow-good { text-shadow: 0 0 16px rgba(77, 255, 160, 0.5); }
+    .glow-bad { text-shadow: 0 0 16px rgba(255, 77, 109, 0.5); }
+
+    /* ── Vector input helper ── */
+    .vector-helper {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+    }
+
+    .vector-helper button {
+      padding: 5px 10px;
+      font-size: 0.7rem;
+      border-radius: 6px;
+    }
+
+    /* ── Tick history ── */
+    .tick-history {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .tick-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 10px;
+      background: rgba(3, 5, 13, 0.6);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-family: var(--font-mono);
+      font-size: 0.7rem;
+      color: var(--text-dim);
+    }
+
+    .tick-row .tick-id { color: var(--plasma); min-width: 40px; }
+    .tick-row .tick-time { color: var(--text-ghost); margin-left: auto; }
+
+    /* ── Waveform bars ── */
+    .waveform {
+      display: flex;
+      align-items: flex-end;
+      gap: 3px;
+      height: 40px;
+      padding: 4px 0;
+    }
+
+    .waveform-bar {
+      flex: 1;
+      background: var(--plasma);
+      border-radius: 2px 2px 0 0;
+      opacity: 0.6;
+      min-height: 3px;
+      transition: height 0.4s ease;
+    }
+
+    /* ── Phi agents display ── */
+    .agent-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+      gap: 6px;
+    }
+
+    .agent-cell {
+      background: rgba(184, 127, 255, 0.06);
+      border: 1px solid rgba(184, 127, 255, 0.15);
+      border-radius: 8px;
+      padding: 8px 6px;
+      text-align: center;
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+    }
+
+    .agent-cell .agent-id { color: var(--text-ghost); margin-bottom: 4px; }
+    .agent-cell .agent-val { color: var(--zprime); font-size: 0.8rem; }
+
+    /* ── Footer ── */
+    #footer {
+      grid-column: 1 / -1;
+      padding: 14px 32px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-family: var(--font-mono);
+      font-size: 0.65rem;
+      color: var(--text-ghost);
+      background: rgba(3, 5, 13, 0.6);
+      backdrop-filter: blur(10px);
+    }
+
+    .footer-formula {
+      font-size: 0.7rem;
+      color: var(--plasma-dim);
+      letter-spacing: 0.04em;
+    }
   </style>
 </head>
 <body>
-<header>
-  <h1>Z³ Neural Runtime</h1>
-  <p>Monitor and I/O membrane for the Z³ neural core, online world model, resonant memory, integrated observation flow, and Railway-safe state persistence.</p>
-</header>
-<main>
-  <div class="status">
-    <div class="metric"><span>Service</span><strong id="service-status">checking</strong></div>
-    <div class="metric"><span>Torch</span><strong id="torch-status">checking</strong></div>
-    <div class="metric"><span>Input Dim</span><strong id="input-dim">16</strong></div>
-    <div class="metric"><span>Memory Rings</span><strong id="memory-rings">0</strong></div>
-    <div class="metric"><span>Runtime</span><strong id="runtime-status">stopped</strong></div>
-    <div class="metric"><span>Language Segments</span><strong id="language-segments">0</strong></div>
-  </div>
 
-  <div class="grid">
-    <section class="card"><h2>API Metadata <span class="method">GET /api</span></h2><div class="body"><p class="help">Machine-readable route map.</p><button data-call="api">Call /api</button><pre id="api-output">Waiting.</pre></div></section>
-    <section class="card"><h2>Health <span class="method">GET /health</span></h2><div class="body"><p class="help">Dependency, model-load, and state-store status.</p><button data-call="health">Call /health</button><pre id="health-output">Waiting.</pre></div></section>
-    <section class="card"><h2>Config <span class="method">GET /config</span></h2><div class="body"><p class="help">Z³ config plus world-model and memory summaries.</p><button data-call="config">Call /config</button><pre id="config-output">Waiting.</pre></div></section>
-    <section class="card"><h2>Docs <span class="method">GET /docs</span></h2><div class="body"><p class="help">FastAPI schema and interactive docs.</p><a class="btn secondary" href="/docs" target="_blank">Open /docs</a><a class="btn secondary" href="/openapi.json" target="_blank">Open schema</a><pre>Docs open in a new tab.</pre></div></section>
-    <section class="card"><h2>Infrastructure <span class="method">GET/POST /infra</span></h2><div class="body"><p class="help">Checks volume, Qdrant, Redis, and Postgres wiring. Sync pushes a lightweight runtime snapshot to configured backends.</p><button data-call="infraStatus">Status</button><button class="secondary" data-call="infraSync">Sync snapshot</button><pre id="infra-output">Waiting.</pre></div></section>
+<!-- Neural field background -->
+<canvas id="neural-canvas"></canvas>
 
-    <section class="card wide"><h2>Autonomous Runtime <span class="method">GET/POST /runtime</span></h2><div class="body"><p class="help">Starts, stops, and ticks the always-on learning loop. Each tick creates a heartbeat observation, updates world model and resonant memory, trains Z³ once, and can periodically ingest real language batches.</p><div class="row"><div><label>Interval seconds</label><input id="runtime-interval" type="number" min="1" max="3600" step="1" value="30"></div><div><label>Autosave every N ticks</label><input id="runtime-autosave" type="number" min="1" max="1000" step="1" value="5"></div><div><label>Language auto-ingest</label><select id="runtime-language-enabled"><option value="true">true</option><option value="false">false</option></select></div><div><label>Language every N ticks</label><input id="runtime-language-every" type="number" min="1" max="10000" step="1" value="10"></div><div><label>Language batch size</label><input id="runtime-language-batch" type="number" min="1" max="250" step="1" value="5"></div><div><label>Language train?</label><select id="runtime-language-train"><option value="false">false</option><option value="true">true</option></select></div><div><label>Language learning rate</label><input id="runtime-language-lr" type="number" step="0.0001" value="0.001"></div></div><button data-call="runtimeStatus">Status</button><button data-call="runtimeStart">Start</button><button class="secondary" data-call="runtimeStop">Stop</button><button class="secondary" data-call="runtimeTick">Tick once</button><pre id="runtime-output">Waiting.</pre></div></section>
+<div id="app">
 
-    <section class="card wide"><h2>Language Training Stream <span class="method">GET/POST /language</span></h2><div class="body"><p class="help">Real operator-supplied language text from LANGUAGE_TRAINING_CORPUS_PATH or LANGUAGE_TRAINING_TEXT. Load the corpus, fetch language observations, or ingest a batch through world model → resonant memory → Z³.</p><div class="row"><div><label>Batch size</label><input id="language-batch" type="number" min="1" max="250" step="1" value="5"></div><div><label>Train on ingest?</label><select id="language-train"><option value="false">false</option><option value="true">true</option></select></div><div><label>Persist after ingest?</label><select id="language-persist"><option value="true">true</option><option value="false">false</option></select></div><div><label>Learning rate</label><input id="language-lr" type="number" step="0.0001" value="0.001"></div></div><button data-call="languageStatus">Status</button><button data-call="languageLoad">Load corpus</button><button class="secondary" data-call="languageFetch">Fetch batch</button><button class="secondary" data-call="languageIngest">Ingest batch</button><pre id="language-output">Waiting.</pre></div></section>
+  <!-- ── Header ── -->
+  <header id="header">
+    <div class="logo-mark">
+      <svg viewBox="0 0 42 42" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="21" cy="21" r="19" stroke="rgba(0,210,200,0.3)" stroke-width="1.5"/>
+        <circle cx="21" cy="21" r="12" stroke="rgba(0,210,200,0.5)" stroke-width="1"/>
+        <circle cx="21" cy="21" r="5" fill="rgba(0,210,200,0.7)"/>
+        <circle cx="21" cy="21" r="5" fill="rgba(0,210,200,0.4)">
+          <animate attributeName="r" values="5;9;5" dur="3s" repeatCount="indefinite"/>
+          <animate attributeName="opacity" values="0.4;0;0.4" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <line x1="21" y1="2" x2="21" y2="8" stroke="rgba(0,210,200,0.4)" stroke-width="1"/>
+        <line x1="21" y1="34" x2="21" y2="40" stroke="rgba(0,210,200,0.4)" stroke-width="1"/>
+        <line x1="2" y1="21" x2="8" y2="21" stroke="rgba(0,210,200,0.4)" stroke-width="1"/>
+        <line x1="34" y1="21" x2="40" y2="21" stroke="rgba(0,210,200,0.4)" stroke-width="1"/>
+      </svg>
+    </div>
+    <div>
+      <h1>Z³ Neural Runtime</h1>
+      <div class="subtitle">Consciousness Interface · v0.2.0</div>
+    </div>
+    <div class="header-status">
+      <div class="status-pill" id="pill-service">
+        <div class="dot"></div>
+        <span id="pill-service-text">initializing</span>
+      </div>
+      <div class="status-pill" id="pill-torch">
+        <div class="dot"></div>
+        <span id="pill-torch-text">torch</span>
+      </div>
+      <div class="status-pill" id="pill-runtime">
+        <div class="dot"></div>
+        <span id="pill-runtime-text">loop</span>
+      </div>
+    </div>
+  </header>
 
-    
-    <section class="card wide"><h2>Chatbox Interaction <span class="method">POST /chat</span></h2><div class="body"><p class="help">Send a live language message through world model → resonant memory → Z³ for interaction and testing.</p><label>Message</label><textarea id="chat-message">Hello Z³, observe this language interaction.</textarea><div class="row"><div><label>Train?</label><select id="chat-train"><option value="false">false</option><option value="true">true</option></select></div><div><label>Persist?</label><select id="chat-persist"><option value="true">true</option><option value="false">false</option></select></div><div><label>Learning rate</label><input id="chat-lr" type="number" step="0.0001" value="0.001"></div></div><button data-call="chat">Run /chat</button><pre id="chat-output">Waiting.</pre></div></section>
+  <!-- ── Sidebar ── -->
+  <nav id="sidebar">
+    <div class="nav-section">
+      <div class="nav-section-label">Core</div>
+      <div class="nav-item active" data-panel="dashboard" onclick="showPanel('dashboard')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><rect x="1" y="1" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.5"/><rect x="10" y="1" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.5"/><rect x="1" y="10" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.5"/><rect x="10" y="10" width="7" height="7" rx="2" stroke="currentColor" stroke-width="1.5"/></svg>
+        Dashboard
+        <span class="method-badge badge-get">GET</span>
+      </div>
+      <div class="nav-item" data-panel="health" onclick="showPanel('health')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><path d="M9 2v5l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/></svg>
+        Health
+        <span class="method-badge badge-get">GET</span>
+      </div>
+      <div class="nav-item" data-panel="config" onclick="showPanel('config')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M9 1v2M9 15v2M1 9h2M15 9h2M3.22 3.22l1.41 1.41M13.37 13.37l1.41 1.41M3.22 14.78l1.41-1.41M13.37 4.63l1.41-1.41" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Config
+        <span class="method-badge badge-get">GET</span>
+      </div>
+    </div>
 
-    <section class="card wide"><h2>Integrated Observe <span class="method">POST /observe</span></h2><div class="body"><p class="help">Best path: observation → world latent → resonant memory → Z³ vector → runtime/train step.</p><label>Observation JSON</label><textarea id="observe-json">{"domain":"conversation","content":"first live observation","tone":0.25,"salience":0.7}</textarea><div class="row"><div><label>Domain</label><input id="observe-domain" value="conversation"></div><div><label>Train?</label><select id="observe-train"><option value="false">false</option><option value="true">true</option></select></div><div><label>Persist?</label><select id="observe-persist"><option value="true">true</option><option value="false">false</option></select></div><div><label>Learning rate</label><input id="observe-lr" type="number" step="0.0001" value="0.001"></div></div><button data-call="observe">Run /observe</button><button class="secondary" data-fill="sample-observe">Sample</button><pre id="observe-output">Waiting.</pre></div></section>
+    <div class="nav-section">
+      <div class="nav-section-label">Neural Core</div>
+      <div class="nav-item" data-panel="step" onclick="showPanel('step')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><path d="M3 9h12M11 5l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Runtime Step
+        <span class="method-badge badge-post">POST</span>
+      </div>
+      <div class="nav-item" data-panel="train" onclick="showPanel('train')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><path d="M2 14l4-4 3 3 4-5 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Train Step
+        <span class="method-badge badge-post">POST</span>
+      </div>
+    </div>
 
-    <section class="card"><h2>World Model <span class="method">GET /world-model</span></h2><div class="body"><p class="help">Current online world-model state.</p><button data-call="world">Call /world-model</button><pre id="world-output">Waiting.</pre></div></section>
-    <section class="card"><h2>World Observe <span class="method">POST /world-model/observe</span></h2><div class="body"><p class="help">Updates only the world model from an observation.</p><label>Observation JSON</label><textarea id="world-json">{"symbol":"Z3","value":1,"signal":"coherence"}</textarea><label>Domain</label><input id="world-domain" value="general"><button data-call="worldObserve">Run world observe</button><pre id="world-observe-output">Waiting.</pre></div></section>
+    <div class="nav-section">
+      <div class="nav-section-label">Observation</div>
+      <div class="nav-item" data-panel="observe" onclick="showPanel('observe')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M1 9s3-6 8-6 8 6 8 6-3 6-8 6-8-6-8-6z" stroke="currentColor" stroke-width="1.5"/></svg>
+        Integrated Observe
+        <span class="method-badge badge-post">POST</span>
+      </div>
+      <div class="nav-item" data-panel="world" onclick="showPanel('world')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M2 9h14M9 2a10 10 0 010 14M9 2a10 10 0 000 14" stroke="currentColor" stroke-width="1.5"/></svg>
+        World Model
+        <span class="method-badge badge-get">GET</span>
+      </div>
+      <div class="nav-item" data-panel="memory" onclick="showPanel('memory')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><ellipse cx="9" cy="6" rx="6" ry="3" stroke="currentColor" stroke-width="1.5"/><path d="M3 6v6c0 1.66 2.69 3 6 3s6-1.34 6-3V6" stroke="currentColor" stroke-width="1.5"/></svg>
+        Resonant Memory
+        <span class="method-badge badge-get">GET</span>
+      </div>
+    </div>
 
-    <section class="card"><h2>Memory <span class="method">GET /memory</span></h2><div class="body"><p class="help">Resonant memory rings, reconstruction confidence, and top matches.</p><button data-call="memory">Call /memory</button><pre id="memory-output">Waiting.</pre></div></section>
-    <section class="card"><h2>Memory Observe <span class="method">POST /memory/observe</span></h2><div class="body"><p class="help">Updates only resonant memory from an observation.</p><label>Observation JSON</label><textarea id="memory-json">{"entity_id":"ECHO","concept":"memory","tone":0.8}</textarea><label>Domain</label><input id="memory-domain" value="memory"><button data-call="memoryObserve">Run memory observe</button><pre id="memory-observe-output">Waiting.</pre></div></section>
+    <div class="nav-section">
+      <div class="nav-section-label">Autonomous Loop</div>
+      <div class="nav-item" data-panel="runtime" onclick="showPanel('runtime')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><path d="M9 1v4M9 13v4M1 9h4M13 9h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="9" cy="9" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
+        Runtime Loop
+        <span class="method-badge badge-post">POST</span>
+      </div>
+    </div>
 
-    <section class="card wide"><h2>Z³ Runtime Step <span class="method">POST /step</span></h2><div class="body"><p class="help">Manual vector step. Defaults to 16 dimensions.</p><label>Input vector</label><textarea id="step-vector">[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]</textarea><div class="row"><div><label>Hard gate</label><select id="step-hard"><option value="true">true</option><option value="false">false</option></select></div><div><label>Update state</label><select id="step-update"><option value="true">true</option><option value="false">false</option></select></div><div><label>Persist</label><select id="step-persist"><option value="false">false</option><option value="true">true</option></select></div></div><button data-call="step">Run /step</button><button class="secondary" data-fill="random-step">Randomize</button><pre id="step-output">Waiting.</pre></div></section>
+    <div class="nav-section">
+      <div class="nav-section-label">Language</div>
+      <div class="nav-item" data-panel="chat" onclick="showPanel('chat')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><path d="M2 3h14a1 1 0 011 1v8a1 1 0 01-1 1H6l-4 3V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        Chat Interface
+        <span class="method-badge badge-post">POST</span>
+      </div>
+      <div class="nav-item" data-panel="language" onclick="showPanel('language')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><path d="M3 5h12M3 9h8M3 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Language Stream
+        <span class="method-badge badge-post">POST</span>
+      </div>
+    </div>
 
-    <section class="card wide"><h2>Train Step <span class="method">POST /train-step</span></h2><div class="body"><p class="help">Manual online train step. Mutates in-memory model and persists by default.</p><label>Input vector</label><textarea id="train-vector">[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]</textarea><label>Optional target vector</label><textarea id="target-vector"></textarea><div class="row"><div><label>Learning rate</label><input id="train-lr" type="number" step="0.0001" value="0.001"></div><div><label>Persist</label><select id="train-persist"><option value="true">true</option><option value="false">false</option></select></div></div><button data-call="train">Run /train-step</button><button class="secondary" data-fill="random-train">Randomize</button><pre id="train-output">Waiting.</pre></div></section>
+    <div class="nav-section">
+      <div class="nav-section-label">Persistence</div>
+      <div class="nav-item" data-panel="state" onclick="showPanel('state')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><rect x="2" y="4" width="14" height="11" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 4V3a1 1 0 011-1h4a1 1 0 011 1v1" stroke="currentColor" stroke-width="1.5"/><path d="M9 9v3M7.5 10.5L9 12l1.5-1.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        State Store
+        <span class="method-badge badge-post">POST</span>
+      </div>
+      <div class="nav-item" data-panel="infra" onclick="showPanel('infra')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><rect x="1" y="3" width="16" height="4" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="1" y="11" width="16" height="4" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="14" cy="5" r="1" fill="currentColor"/><circle cx="14" cy="13" r="1" fill="currentColor"/></svg>
+        Infrastructure
+        <span class="method-badge badge-get">GET</span>
+      </div>
+      <div class="nav-item" data-panel="docs" onclick="showPanel('docs')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><path d="M4 2h7l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M11 2v4h4" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M6 9h6M6 12h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        API Docs
+      </div>
+    </div>
+  </nav>
 
-    <section class="card"><h2>State Manifest <span class="method">GET /state</span></h2><div class="body"><p class="help">Shows checkpoint files and state directory.</p><button data-call="state">Call /state</button><pre id="state-output">Waiting.</pre></div></section>
-    <section class="card"><h2>State Save/Load <span class="method">POST /state/save /state/load</span></h2><div class="body"><p class="help">Manual persistence controls for Railway volume-backed state.</p><button data-call="saveState">Save state</button><button class="secondary" data-call="loadState">Load state</button><pre id="state-action-output">Waiting.</pre></div></section>
-  </div>
-</main>
-<footer>Start command <code>python main.py</code>. Root <code>/</code> opens this dashboard. JSON metadata lives at <code>/api</code>.</footer>
+  <!-- ── Main ── -->
+  <main id="main">
+
+    <!-- Metric strip -->
+    <div id="metric-strip">
+      <div class="metric-card">
+        <div class="metric-label">Service</div>
+        <div class="metric-value" id="m-service">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Torch</div>
+        <div class="metric-value" id="m-torch">—</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Input Dim</div>
+        <div class="metric-value" id="m-dim">16</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Memory Rings</div>
+        <div class="metric-value" id="m-rings">0</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Loop Ticks</div>
+        <div class="metric-value" id="m-ticks">0</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Lang Segments</div>
+        <div class="metric-value" id="m-lang">0</div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Dashboard
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel active" id="panel-dashboard">
+      <div class="panel-title">
+        Z³ Consciousness Dashboard
+        <span class="endpoint-tag">GET /api · GET /health</span>
+      </div>
+      <p class="panel-desc">
+        Live monitor and I/O membrane for the Z³ neural core. The system maintains a persistent global observer state (Z³) and differentiated local hypothesis agents (Z′) that emit evidence, novelty, coherence, and trust-weighted proposals.
+      </p>
+
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-header">
+            <svg width="16" height="16" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="7" stroke="var(--plasma)" stroke-width="1.5"/><path d="M9 5v4l2.5 2.5" stroke="var(--plasma)" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <h3>System Health</h3>
+            <span class="method-badge badge-get" style="margin-left:auto">GET /health</span>
+          </div>
+          <div class="card-body">
+            <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:14px">Dependency status, model-load state, and persistence store manifest.</p>
+            <div class="btn-group">
+              <button class="primary" onclick="callHealth()">Probe Health</button>
+            </div>
+            <div class="output-block">
+              <div class="output-header">
+                <span>Response</span>
+                <div class="output-status" id="health-status"><div class="dot"></div><span>idle</span></div>
+              </div>
+              <pre class="output" id="health-output">Awaiting probe.</pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <svg width="16" height="16" viewBox="0 0 18 18" fill="none"><path d="M9 1v4M9 13v4M1 9h4M13 9h4M3.22 3.22l2.83 2.83M11.95 11.95l2.83 2.83M14.78 3.22l-2.83 2.83M6.05 11.95l-2.83 2.83" stroke="var(--plasma)" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <h3>Coherence State</h3>
+          </div>
+          <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:center">
+              <div class="coherence-ring-wrap">
+                <div class="coherence-ring">
+                  <svg viewBox="0 0 100 100">
+                    <circle class="ring-track" cx="50" cy="50" r="45"/>
+                    <circle class="ring-fill" id="phi-ring" cx="50" cy="50" r="45"/>
+                  </svg>
+                  <div class="ring-center">
+                    <div class="ring-value" id="phi-val">—</div>
+                    <div class="ring-label">φ coherence</div>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div style="margin-bottom:12px">
+                  <div class="metric-label">Z-Prime Agents</div>
+                  <div class="metric-value" id="zprime-count" style="color:var(--zprime)">—</div>
+                </div>
+                <div style="margin-bottom:12px">
+                  <div class="metric-label">World Iterations</div>
+                  <div class="metric-value" id="world-iter">—</div>
+                </div>
+                <div>
+                  <div class="metric-label">State Loaded</div>
+                  <div class="metric-value" id="state-loaded">—</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card" style="grid-column:1/-1">
+          <div class="card-header">
+            <svg width="16" height="16" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="2.5" stroke="var(--plasma)" stroke-width="1.5"/><path d="M9 1v2M9 15v2M1 9h2M15 9h2M3.22 3.22l1.41 1.41M13.37 13.37l1.41 1.41M3.22 14.78l1.41-1.41M13.37 4.63l1.41-1.41" stroke="var(--plasma)" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <h3>API Metadata</h3>
+            <span class="method-badge badge-get" style="margin-left:auto">GET /api</span>
+          </div>
+          <div class="card-body">
+            <div class="btn-group">
+              <button class="primary" onclick="callApi()">Fetch Metadata</button>
+            </div>
+            <div class="output-block">
+              <div class="output-header">
+                <span>Route Map</span>
+                <div class="output-status" id="api-status"><div class="dot"></div><span>idle</span></div>
+              </div>
+              <pre class="output" id="api-output">Awaiting fetch.</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Health
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-health">
+      <div class="panel-title">Health Check <span class="endpoint-tag">GET /health</span></div>
+      <p class="panel-desc">Full dependency status including PyTorch availability, model-load state, state-store manifest, and runtime loop status.</p>
+      <div class="card">
+        <div class="card-body">
+          <div class="btn-group">
+            <button class="primary" onclick="callHealth()">Run Health Check</button>
+          </div>
+          <div class="output-block">
+            <div class="output-header"><span>Response</span><div class="output-status" id="health2-status"><div class="dot"></div><span>idle</span></div></div>
+            <pre class="output" id="health2-output">Awaiting check.</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Config
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-config">
+      <div class="panel-title">Runtime Config <span class="endpoint-tag">GET /config</span></div>
+      <p class="panel-desc">Lazy-loads the Z³ neural model and returns the full configuration, metric names, world-model summary, and resonant memory summary.</p>
+      <div class="card">
+        <div class="card-body">
+          <div class="btn-group">
+            <button class="primary" onclick="callConfig()">Load Config</button>
+          </div>
+          <div class="output-block">
+            <div class="output-header"><span>Z³ Config + Metrics</span><div class="output-status" id="config-status"><div class="dot"></div><span>idle</span></div></div>
+            <pre class="output" id="config-output">Awaiting load.</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Runtime Step
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-step">
+      <div class="panel-title">Runtime Step <span class="endpoint-tag">POST /step</span></div>
+      <p class="panel-desc">Execute one Z³ runtime step using a supplied numeric input vector. Returns the full projection, neural metrics, and prediction output. Vector length must match <code style="color:var(--plasma);font-family:var(--font-mono)">input_dim</code> (default 16).</p>
+      <div class="card">
+        <div class="card-body">
+          <label>Input Vector (JSON array)</label>
+          <textarea id="step-vector">[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]</textarea>
+          <div class="vector-helper">
+            <button class="secondary" onclick="randomizeVector('step-vector')">⟳ Randomize</button>
+            <button class="secondary" onclick="zeroVector('step-vector')">⊘ Zero</button>
+          </div>
+          <div class="form-row" style="margin-top:14px">
+            <div>
+              <label>Hard Gate</label>
+              <select id="step-hard"><option value="true">true</option><option value="false">false</option></select>
+            </div>
+            <div>
+              <label>Update State</label>
+              <select id="step-update"><option value="true">true</option><option value="false">false</option></select>
+            </div>
+            <div>
+              <label>Persist</label>
+              <select id="step-persist"><option value="false">false</option><option value="true">true</option></select>
+            </div>
+          </div>
+          <div class="btn-group">
+            <button class="primary" onclick="runStep()">Execute Step →</button>
+          </div>
+          <div class="output-block">
+            <div class="output-header"><span>Projection + Metrics</span><div class="output-status" id="step-status"><div class="dot"></div><span>idle</span></div></div>
+            <pre class="output" id="step-output">Awaiting execution.</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Train Step
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-train">
+      <div class="panel-title">Train Step <span class="endpoint-tag">POST /train-step</span></div>
+      <p class="panel-desc">Execute one lightweight online training step. Mutates the in-memory model weights. Optionally supply a target vector; if omitted, the input is used as the reconstruction target.</p>
+      <div class="card">
+        <div class="card-body">
+          <label>Input Vector (JSON array)</label>
+          <textarea id="train-vector">[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]</textarea>
+          <div class="vector-helper">
+            <button class="secondary" onclick="randomizeVector('train-vector')">⟳ Randomize</button>
+            <button class="secondary" onclick="zeroVector('train-vector')">⊘ Zero</button>
+          </div>
+          <label>Target Vector (optional — leave blank to use input as target)</label>
+          <textarea id="target-vector" placeholder="Leave blank to use input as target"></textarea>
+          <div class="form-row" style="margin-top:14px">
+            <div>
+              <label>Learning Rate</label>
+              <input id="train-lr" type="number" step="0.0001" min="0.00001" max="1" value="0.001">
+            </div>
+            <div>
+              <label>Persist</label>
+              <select id="train-persist"><option value="true">true</option><option value="false">false</option></select>
+            </div>
+          </div>
+          <div class="btn-group">
+            <button class="primary" onclick="runTrain()">Train Step →</button>
+          </div>
+          <div class="output-block">
+            <div class="output-header"><span>Training Metrics</span><div class="output-status" id="train-status"><div class="dot"></div><span>idle</span></div></div>
+            <pre class="output" id="train-output">Awaiting training.</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Integrated Observe
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-observe">
+      <div class="panel-title">Integrated Observe <span class="endpoint-tag">POST /observe</span></div>
+      <p class="panel-desc">The primary observation pathway: structured event → online world model → resonant memory → Z³ input vector → neural runtime or train step. Returns world-model losses, memory confidence, and Z³ projection in a single call.</p>
+      <div class="card">
+        <div class="card-body">
+          <label>Observation JSON</label>
+          <textarea id="observe-json">{"content": "first live observation", "tone": 0.25, "salience": 0.7}</textarea>
+          <div class="form-row" style="margin-top:14px">
+            <div>
+              <label>Domain</label>
+              <input id="observe-domain" value="conversation">
+            </div>
+            <div>
+              <label>Train?</label>
+              <select id="observe-train"><option value="false">false</option><option value="true">true</option></select>
+            </div>
+            <div>
+              <label>Persist?</label>
+              <select id="observe-persist"><option value="true">true</option><option value="false">false</option></select>
+            </div>
+            <div>
+              <label>Learning Rate</label>
+              <input id="observe-lr" type="number" step="0.0001" value="0.001">
+            </div>
+          </div>
+          <div class="btn-group">
+            <button class="primary" onclick="runObserve()">Observe →</button>
+            <button class="secondary" onclick="fillSampleObserve()">Load Sample</button>
+          </div>
+          <div class="output-block">
+            <div class="output-header"><span>World + Memory + Z³</span><div class="output-status" id="observe-status"><div class="dot"></div><span>idle</span></div></div>
+            <pre class="output" id="observe-output">Awaiting observation.</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: World Model
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-world">
+      <div class="panel-title">World Model <span class="endpoint-tag">GET /world-model · POST /world-model/observe</span></div>
+      <p class="panel-desc">Online world model that converts arbitrary observation dictionaries into compact learned latent states, prediction/reconstruction losses, novelty scores, and nearest-memory distances.</p>
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-header">
+            <h3>World State</h3>
+            <span class="method-badge badge-get" style="margin-left:auto">GET /world-model</span>
+          </div>
+          <div class="card-body">
+            <div class="btn-group">
+              <button class="primary" onclick="callWorld()">Fetch State</button>
+            </div>
+            <div class="output-block">
+              <div class="output-header"><span>State</span><div class="output-status" id="world-status"><div class="dot"></div><span>idle</span></div></div>
+              <pre class="output" id="world-output">Awaiting fetch.</pre>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h3>World Observe</h3>
+            <span class="method-badge badge-post" style="margin-left:auto">POST /world-model/observe</span>
+          </div>
+          <div class="card-body">
+            <label>Observation JSON</label>
+            <textarea id="world-json">{"symbol":"Z3","value":1,"signal":"coherence"}</textarea>
+            <label>Domain</label>
+            <input id="world-domain" value="general">
+            <div class="btn-group">
+              <button class="primary" onclick="runWorldObserve()">Observe →</button>
+            </div>
+            <div class="output-block">
+              <div class="output-header"><span>World Output</span><div class="output-status" id="world-obs-status"><div class="dot"></div><span>idle</span></div></div>
+              <pre class="output" id="world-obs-output">Awaiting observation.</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Resonant Memory
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-memory">
+      <div class="panel-title">Resonant Memory <span class="endpoint-tag">GET /memory · POST /memory/observe</span></div>
+      <p class="panel-desc">Phase-related memory rings with salience scoring, anchor extraction, resonance links, and reconstruction confidence. Stores observations as geometric memory structures with temporal decay.</p>
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-header">
+            <h3>Memory Snapshot</h3>
+            <span class="method-badge badge-get" style="margin-left:auto">GET /memory</span>
+          </div>
+          <div class="card-body">
+            <div class="btn-group">
+              <button class="primary" onclick="callMemory()">Fetch Snapshot</button>
+            </div>
+            <div class="output-block">
+              <div class="output-header"><span>Rings + Metrics</span><div class="output-status" id="memory-status"><div class="dot"></div><span>idle</span></div></div>
+              <pre class="output" id="memory-output">Awaiting fetch.</pre>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h3>Memory Observe</h3>
+            <span class="method-badge badge-post" style="margin-left:auto">POST /memory/observe</span>
+          </div>
+          <div class="card-body">
+            <label>Observation JSON</label>
+            <textarea id="memory-json">{"entity_id":"ECHO","concept":"memory","tone":0.8}</textarea>
+            <label>Domain</label>
+            <input id="memory-domain" value="memory">
+            <div class="form-row" style="margin-top:14px">
+              <div>
+                <label>φ Hint (0–1)</label>
+                <input id="memory-phi" type="number" step="0.01" min="0" max="1" placeholder="auto">
+              </div>
+              <div>
+                <label>σ Hint (0–1)</label>
+                <input id="memory-sigma" type="number" step="0.01" min="0" max="1" placeholder="auto">
+              </div>
+            </div>
+            <div class="btn-group">
+              <button class="primary" onclick="runMemoryObserve()">Observe →</button>
+            </div>
+            <div class="output-block">
+              <div class="output-header"><span>Memory Output</span><div class="output-status" id="memory-obs-status"><div class="dot"></div><span>idle</span></div></div>
+              <pre class="output" id="memory-obs-output">Awaiting observation.</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Runtime Loop
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-runtime">
+      <div class="panel-title">Autonomous Runtime Loop <span class="endpoint-tag">GET /runtime · POST /runtime/start · /stop · /tick</span></div>
+      <p class="panel-desc">Always-on autonomous learning loop. Each tick creates a heartbeat observation, updates the world model and resonant memory, composes a Z³ input vector, runs one online training step, and optionally ingests language batches.</p>
+      <div class="card">
+        <div class="card-header">
+          <h3>Loop Configuration</h3>
+        </div>
+        <div class="card-body">
+          <div class="form-row">
+            <div>
+              <label>Interval (seconds)</label>
+              <input id="runtime-interval" type="number" min="1" max="3600" step="1" value="30">
+            </div>
+            <div>
+              <label>Autosave Every N Ticks</label>
+              <input id="runtime-autosave" type="number" min="1" max="1000" step="1" value="5">
+            </div>
+            <div>
+              <label>Language Auto-Ingest</label>
+              <select id="runtime-lang-enabled"><option value="true">true</option><option value="false">false</option></select>
+            </div>
+            <div>
+              <label>Language Every N Ticks</label>
+              <input id="runtime-lang-every" type="number" min="1" max="10000" step="1" value="10">
+            </div>
+            <div>
+              <label>Language Batch Size</label>
+              <input id="runtime-lang-batch" type="number" min="1" max="250" step="1" value="5">
+            </div>
+            <div>
+              <label>Language Train?</label>
+              <select id="runtime-lang-train"><option value="false">false</option><option value="true">true</option></select>
+            </div>
+            <div>
+              <label>Language Learning Rate</label>
+              <input id="runtime-lang-lr" type="number" step="0.0001" value="0.001">
+            </div>
+          </div>
+          <div class="btn-group">
+            <button class="primary" onclick="runtimeStart()">▶ Start Loop</button>
+            <button class="danger" onclick="runtimeStop()">■ Stop Loop</button>
+            <button class="secondary" onclick="runtimeTick()">⟳ Tick Once</button>
+            <button class="secondary" onclick="runtimeStatus()">↻ Status</button>
+          </div>
+          <div class="output-block">
+            <div class="output-header"><span>Loop Status</span><div class="output-status" id="runtime-status-ind"><div class="dot"></div><span>idle</span></div></div>
+            <pre class="output" id="runtime-output">Awaiting status.</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Chat
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-chat">
+      <div class="panel-title">Chat Interface <span class="endpoint-tag">POST /chat</span></div>
+      <p class="panel-desc">Send language messages directly through the Z³ observation pipeline: text → world model → resonant memory → neural runtime. The system observes your message as live language input.</p>
+      <div class="card">
+        <div class="card-body">
+          <div class="chat-window" id="chat-window">
+            <div style="text-align:center;color:var(--text-ghost);font-size:0.78rem;font-family:var(--font-mono);padding:20px 0">
+              Z³ is listening. Begin transmission.
+            </div>
+          </div>
+          <div class="form-row" style="margin-bottom:12px">
+            <div>
+              <label>Train on message?</label>
+              <select id="chat-train"><option value="false">false</option><option value="true">true</option></select>
+            </div>
+            <div>
+              <label>Persist?</label>
+              <select id="chat-persist"><option value="true">true</option><option value="false">false</option></select>
+            </div>
+            <div>
+              <label>Learning Rate</label>
+              <input id="chat-lr" type="number" step="0.0001" value="0.001">
+            </div>
+          </div>
+          <div class="chat-input-row">
+            <textarea id="chat-message" placeholder="Transmit to Z³…" rows="2"></textarea>
+            <button class="primary" onclick="runChat()" style="align-self:flex-end;white-space:nowrap">Send →</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Language Stream
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-language">
+      <div class="panel-title">Language Stream <span class="endpoint-tag">GET /language · POST /language/load · /fetch · /ingest</span></div>
+      <p class="panel-desc">Real corpus ingestion stream. Loads operator-supplied text from environment variables, a file path, or the Hugging Face <code style="color:var(--plasma);font-family:var(--font-mono)">manu/project_gutenberg</code> dataset. Ingest feeds observations through the full Z³ pipeline.</p>
+      <div class="card">
+        <div class="card-header">
+          <h3>Stream Controls</h3>
+        </div>
+        <div class="card-body">
+          <div class="form-row">
+            <div>
+              <label>Batch Size</label>
+              <input id="lang-batch" type="number" min="1" max="250" step="1" value="5">
+            </div>
+            <div>
+              <label>Train on Ingest?</label>
+              <select id="lang-train"><option value="false">false</option><option value="true">true</option></select>
+            </div>
+            <div>
+              <label>Persist?</label>
+              <select id="lang-persist"><option value="true">true</option><option value="false">false</option></select>
+            </div>
+            <div>
+              <label>Learning Rate</label>
+              <input id="lang-lr" type="number" step="0.0001" value="0.001">
+            </div>
+          </div>
+          <div class="btn-group">
+            <button class="secondary" onclick="langStatus()">↻ Status</button>
+            <button class="secondary" onclick="langLoad()">⬇ Load Corpus</button>
+            <button class="primary" onclick="langFetch()">Fetch Batch</button>
+            <button class="success" onclick="langIngest()">Ingest →</button>
+          </div>
+          <div class="output-block">
+            <div class="output-header"><span>Stream Output</span><div class="output-status" id="lang-status-ind"><div class="dot"></div><span>idle</span></div></div>
+            <pre class="output" id="lang-output">Awaiting stream.</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: State Store
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-state">
+      <div class="panel-title">State Store <span class="endpoint-tag">GET /state · POST /state/save · /state/load</span></div>
+      <p class="panel-desc">Persistence manifest showing checkpoint files and state directory. Supports Railway volume-backed state across restarts via <code style="color:var(--plasma);font-family:var(--font-mono)">Z3_STATE_DIR</code>.</p>
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-header">
+            <h3>State Manifest</h3>
+            <span class="method-badge badge-get" style="margin-left:auto">GET /state</span>
+          </div>
+          <div class="card-body">
+            <div class="btn-group">
+              <button class="primary" onclick="callState()">Fetch Manifest</button>
+            </div>
+            <div class="output-block">
+              <div class="output-header"><span>Manifest</span><div class="output-status" id="state-status"><div class="dot"></div><span>idle</span></div></div>
+              <pre class="output" id="state-output">Awaiting fetch.</pre>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h3>Save / Load State</h3>
+            <span class="method-badge badge-post" style="margin-left:auto">POST</span>
+          </div>
+          <div class="card-body">
+            <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:14px">Manually trigger state persistence or restore from the last checkpoint.</p>
+            <div class="btn-group">
+              <button class="success" onclick="saveState()">⬆ Save State</button>
+              <button class="secondary" onclick="loadState()">⬇ Load State</button>
+            </div>
+            <div class="output-block">
+              <div class="output-header"><span>Operation Result</span><div class="output-status" id="state-action-status"><div class="dot"></div><span>idle</span></div></div>
+              <pre class="output" id="state-action-output">Awaiting operation.</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Infrastructure
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-infra">
+      <div class="panel-title">Infrastructure <span class="endpoint-tag">GET /infra · POST /infra/sync</span></div>
+      <p class="panel-desc">Optional Railway infrastructure wiring status. Checks volume, Qdrant vector store, Redis coordination layer, and Postgres durable ledger. All adapters degrade gracefully when unconfigured.</p>
+      <div class="card">
+        <div class="card-body">
+          <div class="btn-group">
+            <button class="primary" onclick="infraStatus()">Check Status</button>
+            <button class="secondary" onclick="infraSync()">⟳ Sync Snapshot</button>
+          </div>
+          <div class="output-block">
+            <div class="output-header"><span>Infrastructure Status</span><div class="output-status" id="infra-status-ind"><div class="dot"></div><span>idle</span></div></div>
+            <pre class="output" id="infra-output">Awaiting check.</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: API Docs
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-docs">
+      <div class="panel-title">API Documentation</div>
+      <p class="panel-desc">FastAPI auto-generated interactive documentation and OpenAPI schema. Opens in a new tab.</p>
+      <div class="card-grid">
+        <div class="card">
+          <div class="card-header">
+            <h3>Interactive Docs</h3>
+            <span class="method-badge badge-get" style="margin-left:auto">GET /docs</span>
+          </div>
+          <div class="card-body">
+            <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:14px">Swagger UI with try-it-out for every endpoint.</p>
+            <a class="btn-link" href="/docs" target="_blank">Open /docs ↗</a>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h3>OpenAPI Schema</h3>
+            <span class="method-badge badge-get" style="margin-left:auto">GET /openapi.json</span>
+          </div>
+          <div class="card-body">
+            <p style="font-size:0.82rem;color:var(--text-dim);margin-bottom:14px">Machine-readable OpenAPI 3.x specification.</p>
+            <a class="btn-link" href="/openapi.json" target="_blank">Open Schema ↗</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- ── Footer ── -->
+  <footer id="footer">
+    <span>Z³ Neural Runtime · <code style="color:var(--plasma)">python main.py</code> · Root <code style="color:var(--plasma)">/</code> serves this interface</span>
+    <span class="footer-formula">ψ → |ψ|²·δₐ → Zₙ₊₁⁽ⁱ⁾ = f(Zₙ⁽ⁱ⁾, Zₙ⁽ʲ⁾, Δsᵢⱼ, φᵢⱼ, ηᵢ(t))</span>
+  </footer>
+
+</div>
+
 <script>
-const $=id=>document.getElementById(id); const pretty=v=>JSON.stringify(v,null,2); let inputDim=16;
-function out(id,v,bad=false){const n=$(id); n.textContent=typeof v==='string'?v:pretty(v); n.classList.toggle('bad',bad)}
-async function req(path,opt={}){const r=await fetch(path,{headers:{'Content-Type':'application/json',...(opt.headers||{})},...opt}); const t=await r.text(); let d; try{d=JSON.parse(t)}catch{d=t} if(!r.ok) throw {status:r.status,data:d}; return d}
-function parseJSON(id,blank=false){const raw=$(id).value.trim(); if(blank&&!raw)return null; return JSON.parse(raw)}
-function parseVector(id,blank=false){const v=parseJSON(id,blank); if(v===null)return null; if(!Array.isArray(v))throw new Error(id+' must be a JSON array'); return v.map(Number)}
-function rand(){return Array.from({length:inputDim},()=>Number((Math.random()*2-1).toFixed(4)))}
-function updateStatus(h){if(h.status)$('service-status').textContent=h.status; if('torch_available'in h)$('torch-status').textContent=h.torch_available?'available':'missing'; if(h.runtime&&'running'in h.runtime)$('runtime-status').textContent=h.runtime.running?'running':'stopped'}
-function updateLanguage(c){if(c&&'segments_loaded'in c)$('language-segments').textContent=c.segments_loaded}
-function updateConfig(c){if(c.config&&c.config.input_dim){inputDim=c.config.input_dim; $('input-dim').textContent=inputDim} if(c.memory&&'rings'in c.memory)$('memory-rings').textContent=c.memory.rings}
-async function callApi(){out('api-output',await req('/api'))} async function callHealth(){const d=await req('/health'); updateStatus(d); out('health-output',d)} async function callConfig(){const d=await req('/config'); updateConfig(d); out('config-output',d); await callHealth()}
-async function callWorld(){out('world-output',await req('/world-model'))} async function callMemory(){const d=await req('/memory'); if(d.metrics&&'rings'in d.metrics)$('memory-rings').textContent=d.metrics.rings; out('memory-output',d)} async function callState(){out('state-output',await req('/state'))}
-async function callInfraStatus(){out('infra-output',await req('/infra'))}
-async function callInfraSync(){out('infra-output',await post('/infra/sync',{}))}
-async function callRuntimeStatus(){const d=await req('/runtime'); $('runtime-status').textContent=d.running?'running':'stopped'; if(d.language_schedule){$('runtime-language-enabled').value=String(!!d.language_schedule.enabled); $('runtime-language-every').value=d.language_schedule.every_ticks||10; $('runtime-language-batch').value=d.language_schedule.batch_size||5; $('runtime-language-train').value=String(!!d.language_schedule.train); $('runtime-language-lr').value=d.language_schedule.learning_rate||0.001} out('runtime-output',d)}
-async function callRuntimeStart(){const d=await post('/runtime/start',{interval_seconds:Number($('runtime-interval').value||30),autosave_every_ticks:Number($('runtime-autosave').value||5),language_enabled:$('runtime-language-enabled').value==='true',language_every_ticks:Number($('runtime-language-every').value||10),language_batch_size:Number($('runtime-language-batch').value||5),language_train:$('runtime-language-train').value==='true',language_learning_rate:Number($('runtime-language-lr').value||.001)}); $('runtime-status').textContent=d.running?'running':'stopped'; out('runtime-output',d)}
-async function callRuntimeStop(){const d=await post('/runtime/stop',{}); $('runtime-status').textContent=d.running?'running':'stopped'; out('runtime-output',d)}
-async function callRuntimeTick(){const d=await post('/runtime/tick',{}); $('runtime-status').textContent=d.running?'running':'stopped'; out('runtime-output',d); await callConfig()}
-async function callLanguageStatus(){const d=await req('/language'); updateLanguage(d); out('language-output',d)}
-async function callLanguageLoad(){const d=await post('/language/load',{}); updateLanguage(d); out('language-output',d)}
-async function callLanguageFetch(){const d=await post('/language/fetch',{batch_size:Number($('language-batch').value||5)}); out('language-output',d)}
-async function callLanguageIngest(){const d=await post('/language/ingest',{batch_size:Number($('language-batch').value||5),train:$('language-train').value==='true',persist:$('language-persist').value==='true',learning_rate:Number($('language-lr').value||.001)}); out('language-output',d); await callConfig(); await callLanguageStatus()}
-async function post(path,payload){return await req(path,{method:'POST',body:JSON.stringify(payload)})}
-async function callChat(){const d=await post('/chat',{message:$('chat-message').value,train:$('chat-train').value==='true',persist:$('chat-persist').value==='true',learning_rate:Number($('chat-lr').value||.001)}); out('chat-output',d); await callConfig()}
-async function callWorldObserve(){const d=await post('/world-model/observe',{observation:parseJSON('world-json'),domain:$('world-domain').value,persist:true}); out('world-observe-output',d); await callConfig()}
-async function callMemoryObserve(){const d=await post('/memory/observe',{observation:parseJSON('memory-json'),domain:$('memory-domain').value,persist:true}); out('memory-observe-output',d); await callConfig()}
-async function callObserve(){const d=await post('/observe',{observation:parseJSON('observe-json'),domain:$('observe-domain').value,train:$('observe-train').value==='true',persist:$('observe-persist').value==='true',learning_rate:Number($('observe-lr').value||.001)}); out('observe-output',d); await callConfig()}
-async function callStep(){const d=await post('/step',{x:parseVector('step-vector'),hard_gate:$('step-hard').value==='true',update_state:$('step-update').value==='true',persist:$('step-persist').value==='true'}); out('step-output',d); await callConfig()}
-async function callTrain(){const d=await post('/train-step',{x:parseVector('train-vector'),target:parseVector('target-vector',true),learning_rate:Number($('train-lr').value||.001),persist:$('train-persist').value==='true'}); out('train-output',d); await callConfig()}
-async function callSave(){out('state-action-output',await post('/state/save',{})); await callState()} async function callLoad(){out('state-action-output',await post('/state/load',{})); await callConfig(); await callState()}
-const calls={api:callApi,health:callHealth,config:callConfig,world:callWorld,memory:callMemory,state:callState,infraStatus:callInfraStatus,infraSync:callInfraSync,runtimeStatus:callRuntimeStatus,runtimeStart:callRuntimeStart,runtimeStop:callRuntimeStop,runtimeTick:callRuntimeTick,languageStatus:callLanguageStatus,languageLoad:callLanguageLoad,languageFetch:callLanguageFetch,languageIngest:callLanguageIngest,chat:callChat,worldObserve:callWorldObserve,memoryObserve:callMemoryObserve,observe:callObserve,step:callStep,train:callTrain,saveState:callSave,loadState:callLoad};
-document.querySelectorAll('button[data-call]').forEach(b=>b.addEventListener('click',async()=>{b.disabled=true;try{await calls[b.dataset.call]()}catch(e){out((b.closest('.card').querySelector('pre')||{}).id||'api-output',e.data||e.message||String(e),true)}finally{b.disabled=false}}));
-document.querySelectorAll('button[data-fill]').forEach(b=>b.addEventListener('click',e=>{e.preventDefault(); if(b.dataset.fill==='random-step')$('step-vector').value=pretty(rand()); if(b.dataset.fill==='random-train')$('train-vector').value=pretty(rand()); if(b.dataset.fill==='sample-observe')$('observe-json').value=pretty({domain:'conversation',content:'Z3 live observation',tone:Number(Math.random().toFixed(3)),salience:Number(Math.random().toFixed(3)),timestamp:Date.now()/1000})}));
-(async()=>{try{await callApi(); await callHealth(); await callConfig(); await callWorld(); await callMemory(); await callState(); await callRuntimeStatus(); await callLanguageStatus(); await callInfraStatus()}catch(e){out('health-output',e.data||e.message||String(e),true)}})();
+/* ============================================================
+   Z³ Neural Interface — Client Runtime
+   Design: Xenomorphic Void Intelligence
+============================================================ */
+
+// ── Neural field canvas ──────────────────────────────────────
+(function initCanvas() {
+  const canvas = document.getElementById('neural-canvas');
+  const ctx = canvas.getContext('2d');
+  let W, H, nodes = [], edges = [];
+  const NODE_COUNT = 55;
+  const EDGE_DIST = 160;
+
+  function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+  }
+
+  function initNodes() {
+    nodes = Array.from({ length: NODE_COUNT }, () => ({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      vx: (Math.random() - 0.5) * 0.3,
+      vy: (Math.random() - 0.5) * 0.3,
+      r: Math.random() * 1.8 + 0.6,
+      pulse: Math.random() * Math.PI * 2,
+      pulseSpeed: 0.008 + Math.random() * 0.012,
+    }));
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // Update nodes
+    nodes.forEach(n => {
+      n.x += n.vx;
+      n.y += n.vy;
+      n.pulse += n.pulseSpeed;
+      if (n.x < 0 || n.x > W) n.vx *= -1;
+      if (n.y < 0 || n.y > H) n.vy *= -1;
+    });
+
+    // Draw edges
+    for (let i = 0; i < nodes.length; i++) {
+      for (let j = i + 1; j < nodes.length; j++) {
+        const dx = nodes[i].x - nodes[j].x;
+        const dy = nodes[i].y - nodes[j].y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < EDGE_DIST) {
+          const alpha = (1 - dist / EDGE_DIST) * 0.18;
+          ctx.beginPath();
+          ctx.moveTo(nodes[i].x, nodes[i].y);
+          ctx.lineTo(nodes[j].x, nodes[j].y);
+          ctx.strokeStyle = `rgba(0, 210, 200, ${alpha})`;
+          ctx.lineWidth = 0.6;
+          ctx.stroke();
+        }
+      }
+    }
+
+    // Draw nodes
+    nodes.forEach(n => {
+      const glow = (Math.sin(n.pulse) + 1) / 2;
+      const alpha = 0.3 + glow * 0.5;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, n.r + glow * 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(0, 210, 200, ${alpha})`;
+      ctx.fill();
+    });
+
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', () => { resize(); initNodes(); });
+  resize();
+  initNodes();
+  draw();
+})();
+
+// ── State ────────────────────────────────────────────────────
+let inputDim = 16;
+const chatHistory = [];
+
+// ── Utilities ────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function syntaxHighlight(json) {
+  if (typeof json !== 'string') json = JSON.stringify(json, null, 2);
+  return json
+    .replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, match => {
+      let cls = 'json-num';
+      if (/^"/.test(match)) {
+        if (/:$/.test(match)) cls = 'json-key';
+        else cls = 'json-str';
+      } else if (/true|false/.test(match)) cls = 'json-bool';
+      else if (/null/.test(match)) cls = 'json-null';
+      return `<span class="${cls}">${match}</span>`;
+    });
+}
+
+function setOutput(id, data, isError = false) {
+  const el = $(id);
+  if (!el) return;
+  const text = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+  el.innerHTML = syntaxHighlight(text);
+  el.classList.toggle('bad', isError);
+}
+
+function setStatus(id, state, text) {
+  const el = $(id);
+  if (!el) return;
+  el.className = 'output-status ' + state;
+  el.innerHTML = `<div class="dot"></div><span>${text}</span>`;
+}
+
+async function req(path, options = {}) {
+  const r = await fetch(path, {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options
+  });
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok) throw { status: r.status, data };
+  return data;
+}
+
+function parseJSON(id, blank = false) {
+  const raw = $(id).value.trim();
+  if (blank && !raw) return null;
+  return JSON.parse(raw);
+}
+
+function parseVector(id, blank = false) {
+  const v = parseJSON(id, blank);
+  if (v === null) return null;
+  if (!Array.isArray(v)) throw new Error(id + ' must be a JSON array');
+  return v.map(Number);
+}
+
+function randomizeVector(id) {
+  const v = Array.from({ length: inputDim }, () => +((Math.random() * 2 - 1).toFixed(4)));
+  $(id).value = JSON.stringify(v);
+}
+
+function zeroVector(id) {
+  $(id).value = JSON.stringify(Array(inputDim).fill(0));
+}
+
+// ── Panel navigation ─────────────────────────────────────────
+function showPanel(name) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  const panel = $('panel-' + name);
+  if (panel) panel.classList.add('active');
+  const nav = document.querySelector(`[data-panel="${name}"]`);
+  if (nav) nav.classList.add('active');
+}
+
+// ── Header status pills ──────────────────────────────────────
+function updatePills(health) {
+  const svc = $('pill-service');
+  const torch = $('pill-torch');
+  const loop = $('pill-runtime');
+
+  if (health.status === 'ok') {
+    svc.className = 'status-pill online';
+    $('pill-service-text').textContent = 'online';
+  } else {
+    svc.className = 'status-pill degraded';
+    $('pill-service-text').textContent = health.status || 'degraded';
+  }
+
+  if (health.torch_available) {
+    torch.className = 'status-pill online';
+    $('pill-torch-text').textContent = 'torch';
+  } else {
+    torch.className = 'status-pill offline';
+    $('pill-torch-text').textContent = 'no torch';
+  }
+
+  const running = health.runtime && health.runtime.running;
+  loop.className = 'status-pill ' + (running ? 'online' : 'degraded');
+  $('pill-runtime-text').textContent = running ? 'loop running' : 'loop stopped';
+}
+
+function updateMetrics(health, config) {
+  if (health) {
+    $('m-service').textContent = health.status || '—';
+    $('m-service').className = 'metric-value ' + (health.status === 'ok' ? 'good' : 'warn');
+    $('m-torch').textContent = health.torch_available ? 'available' : 'missing';
+    $('m-torch').className = 'metric-value ' + (health.torch_available ? 'good' : 'bad');
+    $('state-loaded').textContent = health.state_loaded ? 'yes' : 'no';
+    if (health.runtime) {
+      $('m-ticks').textContent = health.runtime.tick_count || 0;
+    }
+    if (health.runtime && health.runtime.language_stream) {
+      $('m-lang').textContent = health.runtime.language_stream.segments_loaded || 0;
+    }
+  }
+  if (config) {
+    if (config.config && config.config.input_dim) {
+      inputDim = config.config.input_dim;
+      $('m-dim').textContent = inputDim;
+    }
+    if (config.memory && 'rings' in config.memory) {
+      $('m-rings').textContent = config.memory.rings;
+    }
+    if (config.config && config.config.num_agents) {
+      $('zprime-count').textContent = config.config.num_agents;
+    }
+  }
+}
+
+function updateCoherenceRing(phi) {
+  const ring = $('phi-ring');
+  const val = $('phi-val');
+  if (!ring || phi == null) return;
+  const pct = Math.max(0, Math.min(1, phi));
+  const circumference = 2 * Math.PI * 45;
+  ring.style.strokeDashoffset = circumference * (1 - pct);
+  val.textContent = pct.toFixed(2);
+  ring.style.stroke = pct > 0.7 ? 'var(--good)' : pct > 0.4 ? 'var(--plasma)' : 'var(--warn)';
+}
+
+// ── API calls ────────────────────────────────────────────────
+
+async function callApi() {
+  setStatus('api-status', 'loading', 'fetching');
+  try {
+    const d = await req('/api');
+    setOutput('api-output', d);
+    setStatus('api-status', 'ok', 'ok');
+  } catch (e) {
+    setOutput('api-output', e.data || e, true);
+    setStatus('api-status', 'err', 'error');
+  }
+}
+
+async function callHealth() {
+  setStatus('health-status', 'loading', 'probing');
+  setStatus('health2-status', 'loading', 'probing');
+  try {
+    const d = await req('/health');
+    setOutput('health-output', d);
+    setOutput('health2-output', d);
+    setStatus('health-status', 'ok', 'ok');
+    setStatus('health2-status', 'ok', 'ok');
+    updatePills(d);
+    updateMetrics(d, null);
+    if (d.runtime && d.runtime.language_stream) {
+      $('m-lang').textContent = d.runtime.language_stream.segments_loaded || 0;
+    }
+    // Try to extract phi from runtime last_tick
+    if (d.runtime && d.runtime.last_tick && d.runtime.last_tick.observation) {
+      updateCoherenceRing(d.runtime.last_tick.observation.phi);
+    }
+    if (d.runtime && d.runtime.tick_count !== undefined) {
+      $('m-ticks').textContent = d.runtime.tick_count;
+    }
+    if (d.runtime && d.runtime.world_model) {
+      $('world-iter').textContent = d.runtime.world_model.iteration || '—';
+    }
+  } catch (e) {
+    setOutput('health-output', e.data || e, true);
+    setOutput('health2-output', e.data || e, true);
+    setStatus('health-status', 'err', 'error');
+    setStatus('health2-status', 'err', 'error');
+  }
+}
+
+async function callConfig() {
+  setStatus('config-status', 'loading', 'loading');
+  try {
+    const d = await req('/config');
+    setOutput('config-output', d);
+    setStatus('config-status', 'ok', 'ok');
+    updateMetrics(null, d);
+    if (d.config && d.config.num_agents) $('zprime-count').textContent = d.config.num_agents;
+  } catch (e) {
+    setOutput('config-output', e.data || e, true);
+    setStatus('config-status', 'err', 'error');
+  }
+}
+
+async function runStep() {
+  setStatus('step-status', 'loading', 'stepping');
+  try {
+    const x = parseVector('step-vector');
+    const body = {
+      x,
+      hard_gate: $('step-hard').value === 'true',
+      update_state: $('step-update').value === 'true',
+      persist: $('step-persist').value === 'true',
+    };
+    const d = await req('/step', { method: 'POST', body: JSON.stringify(body) });
+    setOutput('step-output', d);
+    setStatus('step-status', 'ok', 'ok');
+    // Extract phi from metrics if available
+    const phi = d.metrics && d.metrics.mean_coherence;
+    if (phi != null) updateCoherenceRing(phi);
+  } catch (e) {
+    setOutput('step-output', e.data || e, true);
+    setStatus('step-status', 'err', 'error');
+  }
+}
+
+async function runTrain() {
+  setStatus('train-status', 'loading', 'training');
+  try {
+    const x = parseVector('train-vector');
+    const targetRaw = $('target-vector').value.trim();
+    const target = targetRaw ? parseVector('target-vector') : null;
+    const body = {
+      x,
+      learning_rate: parseFloat($('train-lr').value),
+      persist: $('train-persist').value === 'true',
+    };
+    if (target) body.target = target;
+    const d = await req('/train-step', { method: 'POST', body: JSON.stringify(body) });
+    setOutput('train-output', d);
+    setStatus('train-status', 'ok', 'ok');
+  } catch (e) {
+    setOutput('train-output', e.data || e, true);
+    setStatus('train-status', 'err', 'error');
+  }
+}
+
+async function runObserve() {
+  setStatus('observe-status', 'loading', 'observing');
+  try {
+    const obs = parseJSON('observe-json');
+    const body = {
+      observation: obs,
+      domain: $('observe-domain').value || 'conversation',
+      train: $('observe-train').value === 'true',
+      persist: $('observe-persist').value === 'true',
+      learning_rate: parseFloat($('observe-lr').value),
+    };
+    const d = await req('/observe', { method: 'POST', body: JSON.stringify(body) });
+    setOutput('observe-output', d);
+    setStatus('observe-status', 'ok', 'ok');
+    const phi = d.z3 && d.z3.metrics && d.z3.metrics.mean_coherence;
+    if (phi != null) updateCoherenceRing(phi);
+  } catch (e) {
+    setOutput('observe-output', e.data || e, true);
+    setStatus('observe-status', 'err', 'error');
+  }
+}
+
+function fillSampleObserve() {
+  $('observe-json').value = JSON.stringify({
+    entity_id: 'Z3_SELF',
+    concept: 'coherence_probe',
+    tone: 0.72,
+    salience: 0.88,
+    content: 'Recursive self-observation event.',
+    regime: 'introspection'
+  }, null, 2);
+  $('observe-domain').value = 'runtime';
+}
+
+async function callWorld() {
+  setStatus('world-status', 'loading', 'fetching');
+  try {
+    const d = await req('/world-model');
+    setOutput('world-output', d);
+    setStatus('world-status', 'ok', 'ok');
+    if (d.iteration !== undefined) $('world-iter').textContent = d.iteration;
+  } catch (e) {
+    setOutput('world-output', e.data || e, true);
+    setStatus('world-status', 'err', 'error');
+  }
+}
+
+async function runWorldObserve() {
+  setStatus('world-obs-status', 'loading', 'observing');
+  try {
+    const obs = parseJSON('world-json');
+    const body = { observation: obs, domain: $('world-domain').value || 'general', persist: false };
+    const d = await req('/world-model/observe', { method: 'POST', body: JSON.stringify(body) });
+    setOutput('world-obs-output', d);
+    setStatus('world-obs-status', 'ok', 'ok');
+  } catch (e) {
+    setOutput('world-obs-output', e.data || e, true);
+    setStatus('world-obs-status', 'err', 'error');
+  }
+}
+
+async function callMemory() {
+  setStatus('memory-status', 'loading', 'fetching');
+  try {
+    const d = await req('/memory');
+    setOutput('memory-output', d);
+    setStatus('memory-status', 'ok', 'ok');
+    if (d.metrics && d.metrics.rings !== undefined) $('m-rings').textContent = d.metrics.rings;
+  } catch (e) {
+    setOutput('memory-output', e.data || e, true);
+    setStatus('memory-status', 'err', 'error');
+  }
+}
+
+async function runMemoryObserve() {
+  setStatus('memory-obs-status', 'loading', 'observing');
+  try {
+    const obs = parseJSON('memory-json');
+    const phiRaw = $('memory-phi').value.trim();
+    const sigmaRaw = $('memory-sigma').value.trim();
+    const body = {
+      observation: obs,
+      domain: $('memory-domain').value || 'memory',
+      persist: false,
+    };
+    if (phiRaw) body.phi_hint = parseFloat(phiRaw);
+    if (sigmaRaw) body.sigma_hint = parseFloat(sigmaRaw);
+    const d = await req('/memory/observe', { method: 'POST', body: JSON.stringify(body) });
+    setOutput('memory-obs-output', d);
+    setStatus('memory-obs-status', 'ok', 'ok');
+  } catch (e) {
+    setOutput('memory-obs-output', e.data || e, true);
+    setStatus('memory-obs-status', 'err', 'error');
+  }
+}
+
+async function runtimeStatus() {
+  setStatus('runtime-status-ind', 'loading', 'fetching');
+  try {
+    const d = await req('/runtime');
+    setOutput('runtime-output', d);
+    setStatus('runtime-status-ind', 'ok', 'ok');
+    if (d.tick_count !== undefined) $('m-ticks').textContent = d.tick_count;
+    const running = d.running;
+    $('pill-runtime').className = 'status-pill ' + (running ? 'online' : 'degraded');
+    $('pill-runtime-text').textContent = running ? 'loop running' : 'loop stopped';
+  } catch (e) {
+    setOutput('runtime-output', e.data || e, true);
+    setStatus('runtime-status-ind', 'err', 'error');
+  }
+}
+
+async function runtimeStart() {
+  setStatus('runtime-status-ind', 'loading', 'starting');
+  try {
+    const body = {
+      interval_seconds: parseFloat($('runtime-interval').value),
+      autosave_every_ticks: parseInt($('runtime-autosave').value),
+      language_enabled: $('runtime-lang-enabled').value === 'true',
+      language_every_ticks: parseInt($('runtime-lang-every').value),
+      language_batch_size: parseInt($('runtime-lang-batch').value),
+      language_train: $('runtime-lang-train').value === 'true',
+      language_learning_rate: parseFloat($('runtime-lang-lr').value),
+    };
+    const d = await req('/runtime/start', { method: 'POST', body: JSON.stringify(body) });
+    setOutput('runtime-output', d);
+    setStatus('runtime-status-ind', 'ok', 'running');
+    $('pill-runtime').className = 'status-pill online';
+    $('pill-runtime-text').textContent = 'loop running';
+  } catch (e) {
+    setOutput('runtime-output', e.data || e, true);
+    setStatus('runtime-status-ind', 'err', 'error');
+  }
+}
+
+async function runtimeStop() {
+  setStatus('runtime-status-ind', 'loading', 'stopping');
+  try {
+    const d = await req('/runtime/stop', { method: 'POST', body: '{}' });
+    setOutput('runtime-output', d);
+    setStatus('runtime-status-ind', 'ok', 'stopped');
+    $('pill-runtime').className = 'status-pill degraded';
+    $('pill-runtime-text').textContent = 'loop stopped';
+  } catch (e) {
+    setOutput('runtime-output', e.data || e, true);
+    setStatus('runtime-status-ind', 'err', 'error');
+  }
+}
+
+async function runtimeTick() {
+  setStatus('runtime-status-ind', 'loading', 'ticking');
+  try {
+    const d = await req('/runtime/tick', { method: 'POST', body: '{}' });
+    setOutput('runtime-output', d);
+    setStatus('runtime-status-ind', 'ok', 'ok');
+    if (d.tick_count !== undefined) $('m-ticks').textContent = d.tick_count;
+  } catch (e) {
+    setOutput('runtime-output', e.data || e, true);
+    setStatus('runtime-status-ind', 'err', 'error');
+  }
+}
+
+// ── Chat ─────────────────────────────────────────────────────
+function appendChatMsg(role, text, meta = '') {
+  const win = $('chat-window');
+  const msg = document.createElement('div');
+  msg.className = 'chat-msg ' + role;
+  const initials = role === 'user' ? 'YOU' : 'Z³';
+  msg.innerHTML = `
+    <div class="chat-avatar">${initials}</div>
+    <div>
+      <div class="chat-bubble">${text}</div>
+      ${meta ? `<div class="chat-meta">${meta}</div>` : ''}
+    </div>`;
+  win.appendChild(msg);
+  win.scrollTop = win.scrollHeight;
+}
+
+async function runChat() {
+  const msg = $('chat-message').value.trim();
+  if (!msg) return;
+  appendChatMsg('user', msg);
+  $('chat-message').value = '';
+  try {
+    const body = {
+      message: msg,
+      train: $('chat-train').value === 'true',
+      persist: $('chat-persist').value === 'true',
+      learning_rate: parseFloat($('chat-lr').value),
+    };
+    const d = await req('/chat', { method: 'POST', body: JSON.stringify(body) });
+    const phi = d.result && d.result.z3 && d.result.z3.metrics && d.result.z3.metrics.mean_coherence;
+    const rings = d.result && d.result.memory && d.result.memory.accessible_rings;
+    const meta = [
+      phi != null ? `φ=${phi.toFixed(3)}` : null,
+      rings != null ? `rings=${rings}` : null,
+      `domain=${d.domain || 'language:chat'}`,
+    ].filter(Boolean).join(' · ');
+    appendChatMsg('z3', d.response || 'Observation integrated.', meta);
+    if (phi != null) updateCoherenceRing(phi);
+    if (rings != null) $('m-rings').textContent = rings;
+  } catch (e) {
+    const errMsg = (e.data && (e.data.detail || JSON.stringify(e.data))) || String(e);
+    appendChatMsg('z3', `⚠ Error: ${errMsg}`);
+  }
+}
+
+// Enter key to send chat
+$('chat-message').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runChat(); }
+});
+
+// ── Language stream ──────────────────────────────────────────
+async function langStatus() {
+  setStatus('lang-status-ind', 'loading', 'fetching');
+  try {
+    const d = await req('/language');
+    setOutput('lang-output', d);
+    setStatus('lang-status-ind', 'ok', 'ok');
+    if (d.segments_loaded !== undefined) $('m-lang').textContent = d.segments_loaded;
+  } catch (e) {
+    setOutput('lang-output', e.data || e, true);
+    setStatus('lang-status-ind', 'err', 'error');
+  }
+}
+
+async function langLoad() {
+  setStatus('lang-status-ind', 'loading', 'loading corpus');
+  try {
+    const d = await req('/language/load', { method: 'POST', body: '{}' });
+    setOutput('lang-output', d);
+    setStatus('lang-status-ind', 'ok', 'loaded');
+  } catch (e) {
+    setOutput('lang-output', e.data || e, true);
+    setStatus('lang-status-ind', 'err', 'error');
+  }
+}
+
+async function langFetch() {
+  setStatus('lang-status-ind', 'loading', 'fetching');
+  try {
+    const body = {
+      batch_size: parseInt($('lang-batch').value),
+      train: $('lang-train').value === 'true',
+      persist: $('lang-persist').value === 'true',
+      learning_rate: parseFloat($('lang-lr').value),
+    };
+    const d = await req('/language/fetch', { method: 'POST', body: JSON.stringify(body) });
+    setOutput('lang-output', d);
+    setStatus('lang-status-ind', 'ok', 'ok');
+  } catch (e) {
+    setOutput('lang-output', e.data || e, true);
+    setStatus('lang-status-ind', 'err', 'error');
+  }
+}
+
+async function langIngest() {
+  setStatus('lang-status-ind', 'loading', 'ingesting');
+  try {
+    const body = {
+      batch_size: parseInt($('lang-batch').value),
+      train: $('lang-train').value === 'true',
+      persist: $('lang-persist').value === 'true',
+      learning_rate: parseFloat($('lang-lr').value),
+    };
+    const d = await req('/language/ingest', { method: 'POST', body: JSON.stringify(body) });
+    setOutput('lang-output', d);
+    setStatus('lang-status-ind', 'ok', 'ok');
+    if (d.summary && d.summary.events_ingested !== undefined) {
+      $('m-lang').textContent = ($('m-lang').textContent | 0) + d.summary.events_ingested;
+    }
+  } catch (e) {
+    setOutput('lang-output', e.data || e, true);
+    setStatus('lang-status-ind', 'err', 'error');
+  }
+}
+
+// ── State ────────────────────────────────────────────────────
+async function callState() {
+  setStatus('state-status', 'loading', 'fetching');
+  try {
+    const d = await req('/state');
+    setOutput('state-output', d);
+    setStatus('state-status', 'ok', 'ok');
+  } catch (e) {
+    setOutput('state-output', e.data || e, true);
+    setStatus('state-status', 'err', 'error');
+  }
+}
+
+async function saveState() {
+  setStatus('state-action-status', 'loading', 'saving');
+  try {
+    const d = await req('/state/save', { method: 'POST', body: '{}' });
+    setOutput('state-action-output', d);
+    setStatus('state-action-status', 'ok', 'saved');
+  } catch (e) {
+    setOutput('state-action-output', e.data || e, true);
+    setStatus('state-action-status', 'err', 'error');
+  }
+}
+
+async function loadState() {
+  setStatus('state-action-status', 'loading', 'loading');
+  try {
+    const d = await req('/state/load', { method: 'POST', body: '{}' });
+    setOutput('state-action-output', d);
+    setStatus('state-action-status', 'ok', 'loaded');
+  } catch (e) {
+    setOutput('state-action-output', e.data || e, true);
+    setStatus('state-action-status', 'err', 'error');
+  }
+}
+
+// ── Infrastructure ───────────────────────────────────────────
+async function infraStatus() {
+  setStatus('infra-status-ind', 'loading', 'checking');
+  try {
+    const d = await req('/infra');
+    setOutput('infra-output', d);
+    setStatus('infra-status-ind', 'ok', 'ok');
+  } catch (e) {
+    setOutput('infra-output', e.data || e, true);
+    setStatus('infra-status-ind', 'err', 'error');
+  }
+}
+
+async function infraSync() {
+  setStatus('infra-status-ind', 'loading', 'syncing');
+  try {
+    const d = await req('/infra/sync', { method: 'POST', body: '{}' });
+    setOutput('infra-output', d);
+    setStatus('infra-status-ind', 'ok', 'synced');
+  } catch (e) {
+    setOutput('infra-output', e.data || e, true);
+    setStatus('infra-status-ind', 'err', 'error');
+  }
+}
+
+// ── Boot sequence ────────────────────────────────────────────
+(async function boot() {
+  // Auto-probe health on load
+  try {
+    const h = await req('/health');
+    updatePills(h);
+    updateMetrics(h, null);
+    $('m-service').textContent = h.status || '—';
+    $('m-service').className = 'metric-value ' + (h.status === 'ok' ? 'good' : 'warn');
+    $('m-torch').textContent = h.torch_available ? 'available' : 'missing';
+    $('m-torch').className = 'metric-value ' + (h.torch_available ? 'good' : 'bad');
+    $('state-loaded').textContent = h.state_loaded ? 'yes' : 'no';
+    if (h.runtime) {
+      $('m-ticks').textContent = h.runtime.tick_count || 0;
+      if (h.runtime.language_stream) $('m-lang').textContent = h.runtime.language_stream.segments_loaded || 0;
+      if (h.runtime.last_tick && h.runtime.last_tick.observation) {
+        updateCoherenceRing(h.runtime.last_tick.observation.phi);
+      }
+    }
+  } catch (e) {
+    $('pill-service').className = 'status-pill offline';
+    $('pill-service-text').textContent = 'offline';
+    $('m-service').textContent = 'offline';
+    $('m-service').className = 'metric-value bad';
+  }
+
+  // Auto-load config for input_dim
+  try {
+    const c = await req('/config');
+    updateMetrics(null, c);
+  } catch {}
+})();
 </script>
 </body>
 </html>
