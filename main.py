@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from language_stream import LanguageStream
+from curriculum_stream import CurriculumStream
 from z3_language_training import train_z3_on_language_window
 from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
@@ -45,6 +46,7 @@ _MODEL = None
 _WORLD_MODEL = OnlineWorldModel(feature_dim=64, latent_dim=8)
 _MEMORY = ResonantMemoryGeometry(max_rings=256, resonance_horizon=72)
 _LANGUAGE_STREAM = LanguageStream()
+_CURRICULUM_STREAM = CurriculumStream()
 _INFRA = InfrastructureHub()
 _STATE_STORE = StateStore()
 _STATE_LOADED = False
@@ -121,6 +123,16 @@ class LanguageBatchRequest(BaseModel):
     learning_rate: float = Field(1e-3, gt=0.0, le=1.0, description="Learning rate when train=true.")
 
 
+class CurriculumBatchRequest(BaseModel):
+    """Request payload for layered curriculum fetch and ingest operations."""
+
+    batch_size: int = Field(6, ge=1, le=250, description="Number of curriculum observations to fetch or ingest.")
+    source: Optional[str] = Field(None, description="Optional curriculum source kind: language, dialogue, contradiction, event, anomaly, or identity.")
+    train: bool = Field(False, description="Run one online Z³ train step for each ingested curriculum observation.")
+    persist: bool = Field(True, description="Save runtime state after ingestion.")
+    learning_rate: float = Field(1e-3, gt=0.0, le=1.0, description="Learning rate when train=true.")
+
+
 class ChatRequest(BaseModel):
     """Request payload for chatbox language interaction and testing."""
 
@@ -150,6 +162,7 @@ def _status_payload() -> Dict[str, Any]:
         "state": "/state",
         "runtime": "/runtime",
         "language": "/language",
+        "curriculum": "/curriculum",
         "chat": "/chat",
         "infra": "/infra",
     }
@@ -251,6 +264,23 @@ def _runtime_language_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _runtime_curriculum_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not results:
+        return {}
+    base = _runtime_language_summary(results)
+    kinds: Dict[str, int] = {}
+    mean_salience = []
+    for item in results:
+        observation = item.get("observation", {})
+        kind = str(observation.get("curriculum_kind") or "unknown")
+        kinds[kind] = kinds.get(kind, 0) + 1
+        memory = item.get("memory", {})
+        mean_salience.append(float(memory.get("salience", 0.0) or 0.0))
+    base["curriculum_kinds"] = kinds
+    base["mean_salience"] = round(sum(mean_salience) / max(len(mean_salience), 1), 6)
+    return base
+
+
 def _train_z3_on_language_observations(observations: List[Dict[str, Any]], *, learning_rate: float) -> Dict[str, Any]:
     """Train Z³ directly on corpus text sequence windows, not only observation latents."""
     texts = [str(obs.get("text") or obs.get("content") or "").strip() for obs in observations]
@@ -304,6 +334,32 @@ def _ingest_language_batch_for_runtime(*, batch_size: int, train: bool, learning
             item.get("world_model", {}).get("observation", {}).get("entity_id")
             for item in results[:5]
         ],
+    }
+
+
+def _ingest_curriculum_batch_for_runtime(*, batch_size: int, source: Optional[str], train: bool, learning_rate: float) -> Dict[str, Any]:
+    batch = _CURRICULUM_STREAM.fetch_batch(batch_size=batch_size, source=source)
+    observations = list(batch.get("observations", []))
+    results: List[Dict[str, Any]] = []
+    for observation in observations:
+        domain = f"curriculum:{observation.get('curriculum_kind', 'mixed')}"
+        integrated = IntegratedObserveRequest(
+            observation=observation,
+            domain=domain,
+            train=train,
+            persist=False,
+            learning_rate=learning_rate,
+        )
+        item = integrated_observe(integrated)
+        item["observation"] = observation
+        results.append(item)
+    return {
+        "dataset": batch.get("dataset"),
+        "domain": batch.get("domain"),
+        "count": len(results),
+        "offset": batch.get("offset"),
+        "summary": _runtime_curriculum_summary(results),
+        "sample_entity_ids": [item.get("observation", {}).get("entity_id") for item in results[:5]],
     }
 
 
@@ -444,6 +500,7 @@ def config() -> Dict[str, Any]:
         "metric_names": list(model.metric_names()),
         "world_model": _WORLD_MODEL.get_state(),
         "memory": _MEMORY.get_snapshot(recent_ring_count=3)["metrics"],
+        "curriculum": _CURRICULUM_STREAM.status(),
     }
 
 
@@ -523,6 +580,37 @@ def language_ingest(request: LanguageBatchRequest) -> Dict[str, Any]:
     """Fetch language observations and feed them through the integrated Z³ observe path."""
     summary = _ingest_language_batch_for_runtime(
         batch_size=request.batch_size,
+        train=request.train,
+        learning_rate=request.learning_rate,
+    )
+    manifest = _persist_if_requested(request.persist)
+    return {**summary, "state_manifest": manifest}
+
+
+@app.get("/curriculum")
+def curriculum_status() -> Dict[str, Any]:
+    """Return layered curriculum stream status without loading full data into the response."""
+    return _CURRICULUM_STREAM.status()
+
+
+@app.post("/curriculum/load")
+def curriculum_load() -> Dict[str, Any]:
+    """Load configured layered curriculum data or initialize remote streams."""
+    return _CURRICULUM_STREAM.ensure_loaded()
+
+
+@app.post("/curriculum/fetch")
+def curriculum_fetch(request: CurriculumBatchRequest) -> Dict[str, Any]:
+    """Fetch converted curriculum observations without ingesting them."""
+    return _CURRICULUM_STREAM.fetch_batch(batch_size=request.batch_size, source=request.source)
+
+
+@app.post("/curriculum/ingest")
+def curriculum_ingest(request: CurriculumBatchRequest) -> Dict[str, Any]:
+    """Feed layered curriculum observations through the integrated Z³ observe path."""
+    summary = _ingest_curriculum_batch_for_runtime(
+        batch_size=request.batch_size,
+        source=request.source,
         train=request.train,
         learning_rate=request.learning_rate,
     )
@@ -636,6 +724,7 @@ def infra_sync() -> Dict[str, Any]:
         "world_model": _WORLD_MODEL.get_state(),
         "memory": _MEMORY.get_snapshot(recent_ring_count=5).get("metrics", {}),
         "language": _LANGUAGE_STREAM.status(),
+        "curriculum": _CURRICULUM_STREAM.status(),
     }
     return _INFRA.sync_snapshot(snapshot)
 
