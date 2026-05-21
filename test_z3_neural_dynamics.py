@@ -68,7 +68,9 @@ check("Phi anti-monopoly regularizer is active", config.beta_phi_balance > 0.0 a
 check("Adaptive threshold regularizer is configured", config.adaptive_thresholds and config.beta_gate_rate > 0.0 and config.tau_min > 0.0, config)
 check("Boot projection regularizers are configured", config.beta_boot_context > 0.0 and config.beta_boot_variance > 0.0, config)
 check("Rare-expert credit is configured", config.rare_expert_decay > 0.0 and config.rare_expert_trust_bonus > 0.0, config)
+check("Z-prime equation force terms are configured", config.entropy_force_strength > 0.0 and config.global_entropy_strength > 0.0 and config.inverse_square_repulsion_strength > 0.0 and config.cubic_self_strength > 0.0, config)
 check("Initial phi starts near unit gain", bool(torch.allclose(model.phi, torch.ones_like(model.phi), atol=2e-4)), model.phi)
+check("Clustering gamma is bounded", bool(0.0 <= float(model.clustering_gamma.detach()) <= 1.0), model.clustering_gamma)
 check("Metric buffer size follows metric schema", tuple(model.last_metrics.shape) == (model.metric_count(),), model.last_metrics.shape)
 
 x, y = generate_regime_sequence(8, config.input_dim, batch_size=2)
@@ -91,6 +93,13 @@ check("Adaptive thresholds have batch shape", tuple(output["theta_novelty_eff"].
 check("Adaptive temperatures respect tau floor", bool(torch.all(output["tau_novelty_eff"] >= config.tau_min) and torch.all(output["tau_coherence_eff"] >= config.tau_min)), (output["tau_novelty_eff"], output["tau_coherence_eff"]))
 check("Uniform phi has no monopoly penalty", bool(output["losses"]["phi_balance"] <= 1e-8), output["losses"]["phi_balance"])
 check("Metric vector matches schema", tuple(output["metrics"].shape) == (model.metric_count(),), output["metrics"].shape)
+check("Z-prime equation diagnostics are exposed", all(k in output for k in ("agent_entropy", "global_entropy", "gamma", "phase_vectors", "phase_alignment", "entropy_force", "inverse_square_repulsion", "global_entropy_force", "cubic_self_drive", "physics_force")), output.keys())
+check("Entropy scalar shapes are explicit", tuple(output["agent_entropy"].shape) == (4, config.agent_count) and tuple(output["global_entropy"].shape) == (4,), (output["agent_entropy"].shape, output["global_entropy"].shape))
+check("Phase vectors match local agent shape", tuple(output["phase_vectors"].shape) == (4, config.agent_count, config.local_dim), output["phase_vectors"].shape)
+check("Physics force terms are finite", all(bool(torch.isfinite(output[k]).all()) for k in ("entropy_force", "inverse_square_repulsion", "global_entropy_force", "cubic_self_drive", "physics_force")), {k: output[k] for k in ("entropy_force", "inverse_square_repulsion", "global_entropy_force", "cubic_self_drive", "physics_force")})
+metric_dict = model.metrics_to_dict(output["metrics"], output["losses"])
+check("New Z-prime equation metrics are exposed", all(k in metric_dict for k in ("mean_agent_entropy", "mean_global_entropy", "gamma", "phase_alignment", "entropy_force_norm", "inverse_square_repulsion_norm", "global_entropy_force_norm", "cubic_self_drive_norm", "physics_force_norm")), metric_dict.keys())
+check("New Z-prime equation metrics are finite", all(metric_dict[k] == metric_dict[k] for k in ("mean_agent_entropy", "mean_global_entropy", "gamma", "phase_alignment", "entropy_force_norm", "inverse_square_repulsion_norm", "global_entropy_force_norm", "cubic_self_drive_norm", "physics_force_norm")), metric_dict)
 
 zero_trust = torch.zeros(3, config.agent_count)
 zero_weights = model.normalize_trust(zero_trust)
@@ -120,6 +129,15 @@ clustered[0, 2, 0] = 0.02
 clustered[0, 3, 0] = 0.03
 repulsion = model.pairwise_repulsion_field(clustered)
 check("Pairwise repulsion field is active for clustered agents", bool(torch.norm(repulsion) > 0), repulsion)
+phase_clustered = torch.randn_like(clustered)
+phase_clustered = torch.nn.functional.normalize(phase_clustered, dim=-1)
+inverse_repulsion = model.inverse_square_repulsion_field(clustered, phase_clustered)
+check("Inverse-square repulsion remains finite for near-overlap", bool(torch.isfinite(inverse_repulsion).all() and torch.norm(inverse_repulsion) > 0), inverse_repulsion)
+entropy_probe = torch.randn(1, config.agent_count)
+entropy_force = model.entropy_gradient_force(entropy_probe, phase_clustered)
+check("Entropy-gradient force shape is local-agent shaped", tuple(entropy_force.shape) == (1, config.agent_count, config.local_dim) and torch.isfinite(entropy_force).all(), entropy_force)
+cubic_probe = model.cubic_self_recursion(clustered)
+check("Cubic self-recursion is finite and local-agent shaped", tuple(cubic_probe.shape) == (1, config.agent_count, config.local_dim) and torch.isfinite(cubic_probe).all(), cubic_probe)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 before = model.z3_state.detach().clone()
@@ -152,6 +170,14 @@ with tempfile.TemporaryDirectory() as tmpdir:
     restored = Z3NeuralDynamics.load_checkpoint(checkpoint)
     check("Checkpoint restores config", restored.config.input_dim == model.config.input_dim, restored.config)
     check("Checkpoint restores recurrent state", bool(torch.allclose(restored.z3_state, model.z3_state)), (restored.z3_state, model.z3_state))
+    legacy_checkpoint = os.path.join(tmpdir, "legacy_z3.pt")
+    payload = torch.load(checkpoint)
+    payload["last_metrics"] = payload["last_metrics"][:8]
+    payload["state_dict"] = dict(payload["state_dict"])
+    payload["state_dict"]["last_metrics"] = payload["state_dict"]["last_metrics"][:8]
+    torch.save(payload, legacy_checkpoint)
+    restored_legacy = Z3NeuralDynamics.load_checkpoint(legacy_checkpoint)
+    check("Legacy checkpoint metric buffer is padded", tuple(restored_legacy.last_metrics.shape) == (restored_legacy.metric_count(),), restored_legacy.last_metrics.shape)
 
 print("=" * 60)
 print(f"PASS={PASS} FAIL={FAIL} SKIP={SKIP}")

@@ -91,6 +91,17 @@ class Z3Config:
     rare_expert_decay: float = 0.95
     rare_expert_trust_bonus: float = 0.05
 
+    # Explicit Z-prime evolution-equation force terms. These keep the original
+    # trainable architecture intact while making the theoretical components
+    # measurable as additive dynamics in the local-agent update.
+    gamma_init: float = 0.55
+    entropy_force_strength: float = 0.08
+    global_entropy_strength: float = 0.08
+    inverse_square_repulsion_strength: float = 0.015
+    cubic_self_strength: float = 0.035
+    physics_force_clip: float = 2.5
+    entropy_temperature: float = 1.0
+
     beta_predictive: float = 1.0
     beta_coherence_band: float = 0.25
     beta_diversity: float = 0.20
@@ -181,6 +192,14 @@ if torch is not None:
             evidence_in = cfg.local_dim + cfg.context_dim + cfg.agent_embed_dim
             self.evidence_projection = MLP(evidence_in, cfg.evidence_dim, cfg.hidden_dim)
 
+            entropy_in = cfg.local_dim + cfg.context_dim + cfg.agent_embed_dim
+            self.agent_entropy = MLP(entropy_in, 1, cfg.hidden_dim)
+            self.phase_projection = MLP(entropy_in, cfg.local_dim, cfg.hidden_dim, final_tanh=True)
+
+            global_entropy_in = cfg.state_dim + cfg.context_dim
+            self.global_entropy = MLP(global_entropy_in, 1, cfg.hidden_dim)
+            self.global_phase_projection = MLP(cfg.state_dim + cfg.context_dim + cfg.agent_embed_dim, cfg.local_dim, cfg.hidden_dim, final_tanh=True)
+
             expected_in = cfg.state_dim + cfg.context_dim + cfg.agent_embed_dim
             self.expected_evidence = MLP(expected_in, cfg.evidence_dim, cfg.hidden_dim)
 
@@ -189,6 +208,9 @@ if torch is not None:
 
             self.prediction_head = MLP(cfg.evidence_dim + cfg.state_dim + cfg.context_dim, cfg.input_dim, cfg.hidden_dim)
             self.raw_phi = nn.Parameter(torch.log(torch.expm1(torch.ones(cfg.agent_count))))
+            gamma = min(max(float(cfg.gamma_init), 1e-4), 1.0 - 1e-4)
+            self.raw_gamma = nn.Parameter(torch.logit(torch.tensor(gamma, dtype=torch.float32)))
+            self.cubic_bias = nn.Parameter(torch.zeros(cfg.local_dim))
 
             self.register_buffer("z3_state", torch.zeros(cfg.state_dim))
             self.register_buffer("zprime_state", torch.empty(0))
@@ -200,6 +222,11 @@ if torch is not None:
         def phi(self) -> torch.Tensor:
             """Positive per-agent attention/awareness gain."""
             return F.softplus(self.raw_phi) + 1e-4
+
+        @property
+        def clustering_gamma(self) -> torch.Tensor:
+            """Bounded clustering/dispersal control in [0, 1]."""
+            return torch.sigmoid(self.raw_gamma)
 
         def reset_state(self, seed: Optional[int] = None) -> None:
             """Reset persistent Z³ and Z-prime recurrent states."""
@@ -250,13 +277,31 @@ if torch is not None:
             transition_input = torch.cat([agents, target_agents, context_agents, agent_embed, z3_context], dim=-1)
             learned_transition = self.agent_transition(transition_input)
             diversity_field = self.pairwise_repulsion_field(agents)
+
+            entropy_input = torch.cat([agents, context_agents, agent_embed], dim=-1)
+            agent_entropy = F.softplus(self.agent_entropy(entropy_input).squeeze(-1)) / max(cfg.entropy_temperature, cfg.epsilon)
+            global_entropy = F.softplus(self.global_entropy(torch.cat([z3, context], dim=-1))).squeeze(-1)
+            phase_vectors = F.normalize(self.phase_projection(entropy_input), dim=-1, eps=cfg.epsilon)
+            global_phase_input = torch.cat([z3_context, context_agents, agent_embed], dim=-1)
+            global_phase_vectors = F.normalize(self.global_phase_projection(global_phase_input), dim=-1, eps=cfg.epsilon)
+
+            entropy_force = cfg.entropy_force_strength * self.entropy_gradient_force(agent_entropy, phase_vectors)
+            inverse_square_repulsion = cfg.inverse_square_repulsion_strength * self.inverse_square_repulsion_field(agents, phase_vectors)
+            global_entropy_force = cfg.global_entropy_strength * (
+                (global_entropy.unsqueeze(1) - agent_entropy).unsqueeze(-1) * global_phase_vectors
+            )
+            cubic_self_drive = cfg.cubic_self_strength * self.cubic_self_recursion(agents)
+
+            physics_force = entropy_force + inverse_square_repulsion + global_entropy_force + cubic_self_drive
+            physics_force = self.clip_force(physics_force, cfg.physics_force_clip)
             update_vector = (
                 self.phi.view(1, cfg.agent_count, 1) * attraction
                 + learned_transition
                 + cfg.diversity_strength * diversity_field
+                + physics_force
             )
             if add_noise and cfg.noise_scale > 0.0:
-                update_vector = update_vector + torch.randn_like(update_vector) * cfg.noise_scale
+                update_vector = update_vector + torch.randn_like(update_vector) * (cfg.noise_scale * (cfg.step_size ** 0.5))
             z_next = agents + cfg.step_size * update_vector
 
             evidence_input = torch.cat([z_next, context_agents, agent_embed], dim=-1)
@@ -303,6 +348,11 @@ if torch is not None:
                 gate=gate,
                 gate_soft=gate_soft,
                 update_vector=update_vector,
+                physics_force=physics_force,
+                entropy_force=entropy_force,
+                inverse_square_repulsion=inverse_square_repulsion,
+                global_entropy_force=global_entropy_force,
+                cubic_self_drive=cubic_self_drive,
                 boot_target=boot_target,
                 boot_target_z3_only=boot_target_z3_only,
                 theta_novelty_eff=theta_novelty,
@@ -310,7 +360,24 @@ if torch is not None:
                 tau_novelty_eff=tau_novelty,
                 tau_coherence_eff=tau_coherence,
             )
-            metrics = self.compute_metrics(coherence, novelty, gate, z3, z3_next, z_next, evidence, losses)
+            metrics = self.compute_metrics(
+                coherence,
+                novelty,
+                gate,
+                z3,
+                z3_next,
+                z_next,
+                evidence,
+                losses,
+                agent_entropy=agent_entropy,
+                global_entropy=global_entropy,
+                phase_vectors=phase_vectors,
+                entropy_force=entropy_force,
+                inverse_square_repulsion=inverse_square_repulsion,
+                global_entropy_force=global_entropy_force,
+                cubic_self_drive=cubic_self_drive,
+                physics_force=physics_force,
+            )
             agent_utility = (gate_soft * coherence * novelty).detach()
             if update_state:
                 self._commit_state(z3_next, z_next, metrics, agent_utility)
@@ -329,6 +396,16 @@ if torch is not None:
                 "tau_coherence_eff": tau_coherence,
                 "rare_expert_credit": self.rare_expert_credit.detach().clone(),
                 "agent_utility": agent_utility,
+                "agent_entropy": agent_entropy,
+                "global_entropy": global_entropy,
+                "gamma": self.clustering_gamma.detach().expand(batch),
+                "phase_vectors": phase_vectors,
+                "phase_alignment": self.mean_phase_alignment(phase_vectors),
+                "entropy_force": entropy_force,
+                "inverse_square_repulsion": inverse_square_repulsion,
+                "global_entropy_force": global_entropy_force,
+                "cubic_self_drive": cubic_self_drive,
+                "physics_force": physics_force,
                 "evidence": evidence,
                 "expected": expected,
                 "novelty": novelty,
@@ -358,6 +435,11 @@ if torch is not None:
             gate: torch.Tensor,
             gate_soft: torch.Tensor,
             update_vector: torch.Tensor,
+            physics_force: torch.Tensor,
+            entropy_force: torch.Tensor,
+            inverse_square_repulsion: torch.Tensor,
+            global_entropy_force: torch.Tensor,
+            cubic_self_drive: torch.Tensor,
             boot_target: torch.Tensor,
             boot_target_z3_only: torch.Tensor,
             theta_novelty_eff: torch.Tensor,
@@ -380,7 +462,7 @@ if torch is not None:
                 torch.tensor(cfg.evidence_variance_min, device=evidence.device) - evidence_variance_value
             ).pow(2)
             stability = torch.mean((z3_next - z3).pow(2))
-            effort = torch.mean((z_next - agents).pow(2)) + 0.1 * torch.mean(update_vector.pow(2))
+            effort = torch.mean((z_next - agents).pow(2)) + 0.1 * torch.mean(update_vector.pow(2)) + 0.05 * torch.mean(physics_force.pow(2))
             useful_novelty = torch.mean(gate * coherence * novelty)
             phi_weights = self.phi / self.phi.sum().clamp_min(cfg.epsilon)
             phi_concentration = torch.sum(phi_weights.pow(2))
@@ -612,13 +694,83 @@ if torch is not None:
             """Load a saved Z³ neural dynamics checkpoint."""
             payload = torch.load(path, map_location=map_location)
             model = cls(Z3Config(**payload["config"]))
-            model.load_state_dict(payload["state_dict"], strict=False)
+            state_dict = dict(payload["state_dict"])
+            if "last_metrics" in state_dict and state_dict["last_metrics"].numel() != model.metric_count():
+                state_dict.pop("last_metrics")
+            model.load_state_dict(state_dict, strict=False)
             device = next(model.parameters()).device
             model.z3_state = payload["z3_state"].to(device)
             model.zprime_state = payload["zprime_state"].to(device)
             if "last_metrics" in payload:
-                model.last_metrics = payload["last_metrics"].to(device)
+                loaded_metrics = payload["last_metrics"].to(device)
+                target_count = model.metric_count()
+                if loaded_metrics.numel() < target_count:
+                    padded = torch.zeros(target_count, device=device, dtype=loaded_metrics.dtype)
+                    padded[: loaded_metrics.numel()] = loaded_metrics.reshape(-1)
+                    loaded_metrics = padded
+                elif loaded_metrics.numel() > target_count:
+                    loaded_metrics = loaded_metrics.reshape(-1)[:target_count]
+                model.last_metrics = loaded_metrics
             return model
+
+        def entropy_gradient_force(self, entropy: torch.Tensor, phase_vectors: torch.Tensor) -> torch.Tensor:
+            """Approximate Σ_j (2γ - 1)(S_j - S_i)e^{iφ_ij} in real vector space."""
+            cfg = self.config
+            if entropy.numel() == 0 or entropy.shape[1] < 2:
+                return torch.zeros_like(phase_vectors)
+            entropy_delta = entropy.unsqueeze(1) - entropy.unsqueeze(2)  # S_j - S_i for each receiver i.
+            phase_delta = phase_vectors.unsqueeze(2) - phase_vectors.unsqueeze(1)
+            phase_direction = F.normalize(phase_delta, dim=-1, eps=cfg.epsilon)
+            agent_count = entropy.shape[1]
+            eye = torch.eye(agent_count, dtype=torch.bool, device=entropy.device).view(1, agent_count, agent_count)
+            force = entropy_delta.unsqueeze(-1) * phase_direction
+            force = force.masked_fill(eye.unsqueeze(-1), 0.0)
+            return (2.0 * self.clustering_gamma - 1.0) * force.sum(dim=2) / max(agent_count - 1, 1)
+
+        def inverse_square_repulsion_field(self, states: torch.Tensor, phase_vectors: Optional[torch.Tensor] = None) -> torch.Tensor:
+            """Short-range k/d² repulsion with safe clamping and optional phase direction."""
+            cfg = self.config
+            if states.numel() == 0 or states.shape[1] < 2:
+                return torch.zeros_like(states)
+            diff = states.unsqueeze(2) - states.unsqueeze(1)
+            dist = torch.norm(diff, dim=-1).clamp_min(cfg.epsilon)
+            direction = diff / dist.unsqueeze(-1)
+            if phase_vectors is not None:
+                phase_delta = phase_vectors.unsqueeze(2) - phase_vectors.unsqueeze(1)
+                phase_direction = F.normalize(phase_delta, dim=-1, eps=cfg.epsilon)
+                direction = F.normalize(direction + phase_direction, dim=-1, eps=cfg.epsilon)
+            agent_count = states.shape[1]
+            eye = torch.eye(agent_count, dtype=torch.bool, device=states.device).view(1, agent_count, agent_count)
+            active = (dist < cfg.repulsion_radius) & (~eye)
+            magnitude = active.to(states.dtype) / dist.pow(2).clamp_min(cfg.epsilon)
+            magnitude = magnitude.clamp_max(1.0 / max(cfg.epsilon, 1e-3))
+            repulsion = direction * magnitude.unsqueeze(-1)
+            repulsion = repulsion.masked_fill(eye.unsqueeze(-1), 0.0)
+            denom = active.sum(dim=2, keepdim=True).clamp_min(1).to(states.dtype)
+            return repulsion.sum(dim=2) / denom
+
+        def cubic_self_recursion(self, states: torch.Tensor) -> torch.Tensor:
+            """Normalized cubic self-recursion term α((z/|z|)^3 + c)."""
+            cfg = self.config
+            unit = states / torch.norm(states, dim=-1, keepdim=True).clamp_min(cfg.epsilon)
+            return unit.pow(3) + torch.tanh(self.cubic_bias).view(1, 1, -1)
+
+        def clip_force(self, force: torch.Tensor, max_norm: float) -> torch.Tensor:
+            """Clip force vectors by norm without altering direction."""
+            if max_norm <= 0.0:
+                return force
+            norm = torch.norm(force, dim=-1, keepdim=True).clamp_min(self.config.epsilon)
+            scale = (float(max_norm) / norm).clamp_max(1.0)
+            return force * scale
+
+        def mean_phase_alignment(self, phase_vectors: torch.Tensor) -> torch.Tensor:
+            """Mean pairwise phase-direction cosine mapped to [0, 1]."""
+            if phase_vectors.numel() == 0 or phase_vectors.shape[1] < 2:
+                return phase_vectors.new_tensor(0.0)
+            sim = torch.matmul(phase_vectors, phase_vectors.transpose(1, 2))
+            agent_count = phase_vectors.shape[1]
+            mask = torch.triu(torch.ones(agent_count, agent_count, dtype=torch.bool, device=phase_vectors.device), diagonal=1)
+            return ((sim[:, mask].mean() + 1.0) * 0.5).detach()
 
         def pairwise_repulsion_field(self, states: torch.Tensor, top_k: Optional[int] = 3) -> torch.Tensor:
             """Push nearby Z-prime agents away from each other within each sample."""
@@ -675,6 +827,15 @@ if torch is not None:
             z_next: torch.Tensor,
             evidence: torch.Tensor,
             losses: Dict[str, torch.Tensor],
+            *,
+            agent_entropy: torch.Tensor,
+            global_entropy: torch.Tensor,
+            phase_vectors: torch.Tensor,
+            entropy_force: torch.Tensor,
+            inverse_square_repulsion: torch.Tensor,
+            global_entropy_force: torch.Tensor,
+            cubic_self_drive: torch.Tensor,
+            physics_force: torch.Tensor,
         ) -> torch.Tensor:
             cfg = self.config
             gate_clamped = gate.clamp(cfg.epsilon, 1.0 - cfg.epsilon)
@@ -690,6 +851,15 @@ if torch is not None:
                     evidence.var(dim=1, unbiased=False).mean().detach(),
                     gate_entropy.detach(),
                     losses["total"].detach(),
+                    agent_entropy.mean().detach(),
+                    global_entropy.mean().detach(),
+                    self.clustering_gamma.detach(),
+                    self.mean_phase_alignment(phase_vectors).detach(),
+                    torch.norm(entropy_force, dim=-1).mean().detach(),
+                    torch.norm(inverse_square_repulsion, dim=-1).mean().detach(),
+                    torch.norm(global_entropy_force, dim=-1).mean().detach(),
+                    torch.norm(cubic_self_drive, dim=-1).mean().detach(),
+                    torch.norm(physics_force, dim=-1).mean().detach(),
                 ]
             )
 
@@ -758,6 +928,15 @@ if torch is not None:
                 "evidence_variance",
                 "gate_entropy",
                 "loss_total",
+                "mean_agent_entropy",
+                "mean_global_entropy",
+                "gamma",
+                "phase_alignment",
+                "entropy_force_norm",
+                "inverse_square_repulsion_norm",
+                "global_entropy_force_norm",
+                "cubic_self_drive_norm",
+                "physics_force_norm",
             )
 
         @classmethod
