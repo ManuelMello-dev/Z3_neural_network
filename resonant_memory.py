@@ -17,7 +17,8 @@ from typing import Any, Deque, Dict, List
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-    return max(low, min(high, float(value)))
+    numeric = _safe_float(value, low)
+    return max(low, min(high, numeric))
 
 
 
@@ -25,7 +26,8 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
             return default
-        return float(value)
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else default
     except Exception:
         return default
 
@@ -212,7 +214,7 @@ class ResonantMemoryGeometry:
 
     def _phase_position(self, anchors: List[str], state_vector: Dict[str, float]) -> float:
         anchor_mass = sum(sum(ord(ch) for ch in anchor) for anchor in anchors)
-        vector_mass = sum((idx + 1) * int(abs(value) * 1000) for idx, value in enumerate(state_vector.values()))
+        vector_mass = sum((idx + 1) * int(abs(_safe_float(value, 0.0)) * 1000) for idx, value in enumerate(state_vector.values()))
         raw = (anchor_mass + vector_mass) % 3600
         return (raw / 3600.0) * (2.0 * math.pi)
 

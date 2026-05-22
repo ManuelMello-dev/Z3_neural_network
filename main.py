@@ -7,6 +7,7 @@ persistence across Railway restarts when a volume is attached.
 """
 from __future__ import annotations
 
+import math
 import os
 import threading
 import time
@@ -215,11 +216,56 @@ def _metrics(output: Dict[str, Any], model: Any) -> Dict[str, Any]:
     }
 
 
+def _finite_float(value: Any, default: float = 0.0) -> float:
+    try:
+        numeric = float(value)
+        return numeric if math.isfinite(numeric) else default
+    except Exception:
+        return default
+
+
+
 def _current_phi_sigma(model: Any) -> tuple[float, float]:
     metrics = model.metrics_to_dict(model.last_metrics)
-    phi = float(metrics.get("mean_coherence", 0.5) or 0.5)
-    sigma = min(1.0, max(0.0, float(model.config.noise_scale) + float(metrics.get("gate_entropy", 0.5) or 0.5)))
+    phi = _finite_float(metrics.get("mean_coherence", 0.5), 0.5)
+    gate_entropy = _finite_float(metrics.get("gate_entropy", 0.5), 0.5)
+    sigma = min(1.0, max(0.0, _finite_float(model.config.noise_scale, 0.01) + gate_entropy))
     return max(0.0, min(1.0, phi)), sigma
+
+
+def _tensor_is_finite(value: Any) -> bool:
+    return bool(torch.isfinite(value).all().item())
+
+
+def _model_state_is_finite(model: Any) -> bool:
+    if torch is None:
+        return False
+    with torch.no_grad():
+        for parameter in model.parameters():
+            if not _tensor_is_finite(parameter):
+                return False
+        for buffer in model.buffers():
+            if buffer.numel() > 0 and not _tensor_is_finite(buffer):
+                return False
+    return True
+
+
+def _reset_corrupted_neural_runtime(reason: str) -> Dict[str, Any]:
+    """Replace a non-finite neural core with a fresh model and persist the clean state."""
+    global _MODEL, _OPTIMIZER, _STATE_LOADED
+    _require_torch()
+    with _RUNTIME_LOCK:
+        _MODEL = Z3NeuralDynamics()
+        _OPTIMIZER = None
+        _STATE_LOADED = True
+        manifest = _STATE_STORE.save_all(model=_MODEL, world_model=_WORLD_MODEL, memory=_MEMORY)
+    return {"reset": True, "reason": reason, "state_manifest": manifest}
+
+
+def _ensure_finite_neural_runtime(model: Any) -> Optional[Dict[str, Any]]:
+    if not _model_state_is_finite(model):
+        return _reset_corrupted_neural_runtime("non_finite_neural_state_detected")
+    return None
 
 
 def _compose_z3_input(world_output: Dict[str, Any], memory_output: Dict[str, Any], expected_dim: int) -> List[float]:
@@ -369,6 +415,9 @@ def _runtime_tick() -> Dict[str, Any]:
     _RUNTIME_TICK_SEQUENCE += 1
     runtime_tick_id = _RUNTIME_TICK_SEQUENCE
     model = get_model()
+    reset_info = _ensure_finite_neural_runtime(model)
+    if reset_info:
+        model = get_model()
     phi, sigma = _current_phi_sigma(model)
     observation = {
         "timestamp": time.time(),
@@ -392,16 +441,28 @@ def _runtime_tick() -> Dict[str, Any]:
             "phi": phi,
             "sigma": sigma,
             "coherence": phi,
-            "drift": float(model.metrics_to_dict(model.last_metrics).get("z3_delta_norm", 0.0) or 0.0),
+            "drift": _finite_float(model.metrics_to_dict(model.last_metrics).get("z3_delta_norm", 0.0), 0.0),
             "regime": "autonomous_runtime",
         },
     )
     z3_vector = _compose_z3_input(world_output.to_dict(), memory_output, model.config.input_dim)
     x = _tensor_from_vector(z3_vector, model.config.input_dim)
     optimizer = _get_optimizer(model, float(os.environ.get("Z3_RUNTIME_LR", "0.001")))
-    train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
-    with torch.no_grad():
-        projection_output = model.forward(x, hard_gate=True, update_state=False, add_noise=False)
+    try:
+        train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
+        with torch.no_grad():
+            projection_output = model.forward(x, hard_gate=True, update_state=False, add_noise=False)
+    except Exception as exc:
+        error_text = str(exc).lower()
+        if "nan" not in error_text and "non-finite" not in error_text and "inf" not in error_text:
+            raise
+        reset_info = _reset_corrupted_neural_runtime(f"runtime_tick_recovered_from_{type(exc).__name__}")
+        model = get_model()
+        optimizer = _get_optimizer(model, float(os.environ.get("Z3_RUNTIME_LR", "0.001")))
+        train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
+        with torch.no_grad():
+            projection_output = model.forward(x, hard_gate=True, update_state=False, add_noise=False)
+        train_metrics["self_healing_reset"] = reset_info
 
     language_result: Optional[Dict[str, Any]] = None
     language_enabled = bool(_RUNTIME_LANGUAGE_CONFIG.get("enabled", False))
