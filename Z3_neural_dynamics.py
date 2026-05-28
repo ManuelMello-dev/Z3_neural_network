@@ -68,6 +68,12 @@ class Z3Config:
     repulsion_power: float = 1.0
     lambda_coherence: float = 1.15
     trust_floor: float = 1e-4
+    phi_floor: float = 0.05
+    coherence_floor: float = 0.05
+    novelty_exploration_floor: float = 0.03
+    novelty_residual_strength: float = 0.01
+    novelty_residual_clip: float = 0.10
+    min_integrative_drift: float = 1e-4
 
     theta_novelty: float = 0.35
     theta_coherence: float = 0.30
@@ -313,22 +319,36 @@ if torch is not None:
             distance = torch.norm(z_next - target_agents, dim=-1)
             coherence = torch.exp(-cfg.lambda_coherence * distance)
             theta_novelty, theta_coherence, tau_novelty, tau_coherence = self.contextual_thresholds(context)
-            gate_soft = torch.sigmoid((novelty - theta_novelty) / tau_novelty) * torch.sigmoid(
-                (coherence - theta_coherence) / tau_coherence
-            )
+            novelty_gate = torch.sigmoid((novelty - theta_novelty) / tau_novelty)
+            coherence_gate = torch.sigmoid((coherence - theta_coherence) / tau_coherence)
+            gate_soft = novelty_gate * coherence_gate
             gate = (gate_soft > 0.5).float() if hard_gate else gate_soft
 
             credit = self.rare_expert_credit.to(device).view(1, cfg.agent_count)
             credit_norm = credit / credit.sum(dim=1, keepdim=True).clamp_min(cfg.epsilon)
-            trust = gate * self.phi.view(1, cfg.agent_count) * coherence
+            phi_gain = self.phi.view(1, cfg.agent_count).clamp_min(cfg.phi_floor)
+            coherence_gain = coherence.clamp_min(cfg.coherence_floor)
+            exploratory_gate = (gate + cfg.novelty_exploration_floor * novelty_gate).clamp_max(1.0)
+            trust = exploratory_gate * phi_gain * coherence_gain
             if cfg.rare_expert_trust_bonus > 0.0:
-                trust = trust + cfg.rare_expert_trust_bonus * credit_norm * coherence
+                trust = trust + cfg.rare_expert_trust_bonus * credit_norm * coherence_gain
             weights = self.normalize_trust(trust)
 
             proposal_input = torch.cat([evidence, z3_context, context_agents], dim=-1)
             proposals = self.gamma(proposal_input)
             integrated_delta = torch.sum(proposals * weights.unsqueeze(-1), dim=1)
-            z3_next = (1.0 - cfg.alpha_decay) * z3 + cfg.alpha_update * integrated_delta
+            novelty_pressure = torch.tanh(((novelty - theta_novelty) / tau_novelty).clamp_min(0.0)).unsqueeze(-1)
+            residual_delta = torch.sum(proposals * novelty_pressure * weights.unsqueeze(-1), dim=1)
+            residual_norm = torch.norm(residual_delta, dim=-1, keepdim=True).clamp_min(cfg.epsilon)
+            residual_scale = (cfg.novelty_residual_clip / residual_norm).clamp_max(1.0)
+            residual_delta = residual_delta * residual_scale
+            z3_next = (1.0 - cfg.alpha_decay) * z3 + cfg.alpha_update * integrated_delta + cfg.novelty_residual_strength * residual_delta
+            z3_delta = z3_next - z3
+            z3_delta_norm = torch.norm(z3_delta, dim=-1, keepdim=True)
+            residual_direction = residual_delta / torch.norm(residual_delta, dim=-1, keepdim=True).clamp_min(cfg.epsilon)
+            active_residual = (novelty_pressure.mean(dim=1) > 0.0) & (torch.norm(residual_delta, dim=-1, keepdim=True) > cfg.epsilon)
+            drift_shortfall = (cfg.min_integrative_drift - z3_delta_norm).clamp_min(0.0)
+            z3_next = torch.where(active_residual, z3_next + drift_shortfall * residual_direction, z3_next)
 
             integrated_evidence = torch.sum(evidence * weights.unsqueeze(-1), dim=1)
             prediction_input = torch.cat([integrated_evidence, z3_next, context], dim=-1)
@@ -353,6 +373,9 @@ if torch is not None:
                 inverse_square_repulsion=inverse_square_repulsion,
                 global_entropy_force=global_entropy_force,
                 cubic_self_drive=cubic_self_drive,
+                residual_delta=residual_delta,
+                novelty_pressure=novelty_pressure,
+                exploratory_gate=exploratory_gate,
                 boot_target=boot_target,
                 boot_target_z3_only=boot_target_z3_only,
                 theta_novelty_eff=theta_novelty,
@@ -378,7 +401,10 @@ if torch is not None:
                 cubic_self_drive=cubic_self_drive,
                 physics_force=physics_force,
             )
-            agent_utility = (gate_soft * coherence * novelty).detach()
+            losses["novelty_residual_norm"] = torch.norm(residual_delta, dim=-1).mean().detach()
+            losses["novelty_pressure"] = novelty_pressure.mean().detach()
+            losses["exploratory_gate"] = exploratory_gate.mean().detach()
+            agent_utility = (exploratory_gate * coherence_gain * novelty).detach()
             if update_state:
                 self._commit_state(z3_next, z_next, metrics, agent_utility)
 
@@ -440,6 +466,9 @@ if torch is not None:
             inverse_square_repulsion: torch.Tensor,
             global_entropy_force: torch.Tensor,
             cubic_self_drive: torch.Tensor,
+            residual_delta: torch.Tensor,
+            novelty_pressure: torch.Tensor,
+            exploratory_gate: torch.Tensor,
             boot_target: torch.Tensor,
             boot_target_z3_only: torch.Tensor,
             theta_novelty_eff: torch.Tensor,
@@ -463,7 +492,8 @@ if torch is not None:
             ).pow(2)
             stability = torch.mean((z3_next - z3).pow(2))
             effort = torch.mean((z_next - agents).pow(2)) + 0.1 * torch.mean(update_vector.pow(2)) + 0.05 * torch.mean(physics_force.pow(2))
-            useful_novelty = torch.mean(gate * coherence * novelty)
+            useful_novelty = torch.mean(exploratory_gate * coherence.clamp_min(cfg.coherence_floor) * novelty)
+            residual_activity = torch.norm(residual_delta, dim=-1).mean() + novelty_pressure.mean()
             phi_weights = self.phi / self.phi.sum().clamp_min(cfg.epsilon)
             phi_concentration = torch.sum(phi_weights.pow(2))
             phi_concentration_limit = torch.tensor(
@@ -513,6 +543,7 @@ if torch is not None:
                 "stability": stability,
                 "effort": effort,
                 "useful_novelty": useful_novelty,
+                "residual_activity": residual_activity.detach(),
                 "phi_balance": phi_balance,
                 "phi_concentration": phi_concentration.detach(),
                 "phi_effective_agents": phi_effective_agents.detach(),

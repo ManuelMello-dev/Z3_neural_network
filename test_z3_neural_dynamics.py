@@ -164,6 +164,38 @@ check("Public projection exposes z_cubed_state", "z_cubed_state" in projection, 
 check("Public projection exposes phi", "phi" in projection and 0.0 <= projection["phi"] <= 1.0, projection)
 check("Public projection exposes learning metrics", "learning" in projection, projection)
 
+lock_config = Z3Config(
+    input_dim=8,
+    context_dim=16,
+    state_dim=24,
+    local_dim=12,
+    evidence_dim=10,
+    hidden_dim=32,
+    agent_count=4,
+    agent_embed_dim=6,
+    noise_scale=0.0,
+    theta_novelty=0.0,
+    theta_coherence=0.95,
+    phi_floor=0.05,
+    coherence_floor=0.05,
+    novelty_exploration_floor=0.05,
+    novelty_residual_strength=0.02,
+    novelty_residual_clip=0.10,
+    min_integrative_drift=1e-4,
+)
+lock_model = Z3NeuralDynamics(lock_config)
+with torch.no_grad():
+    lock_model.raw_phi.fill_(-20.0)
+    lock_model.zprime_state.add_(25.0)
+locked_before = lock_model.z3_state.detach().clone()
+lock_x = torch.linspace(-3.0, 3.0, lock_config.input_dim).unsqueeze(0)
+lock_output = lock_model.forward(lock_x, update_state=True, hard_gate=False, add_noise=False)
+lock_metrics = lock_model.metrics_to_dict(lock_output["metrics"], lock_output["losses"])
+locked_after = lock_model.z3_state.detach().clone()
+check("Novelty residual prevents zero-phi integration lock", bool(torch.norm(locked_after - locked_before) >= lock_config.min_integrative_drift * 0.9), lock_metrics)
+check("Useful novelty remains positive under low coherence", lock_metrics.get("useful_novelty", 0.0) > 0.0, lock_metrics)
+check("Novelty residual diagnostics are exposed", lock_metrics.get("novelty_residual_norm", 0.0) > 0.0 and lock_metrics.get("exploratory_gate", 0.0) > 0.0, lock_metrics)
+
 with tempfile.TemporaryDirectory() as tmpdir:
     checkpoint = os.path.join(tmpdir, "z3.pt")
     model.save_checkpoint(checkpoint)

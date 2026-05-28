@@ -229,8 +229,9 @@ def _current_phi_sigma(model: Any) -> tuple[float, float]:
     metrics = model.metrics_to_dict(model.last_metrics)
     phi = _finite_float(metrics.get("mean_coherence", 0.5), 0.5)
     gate_entropy = _finite_float(metrics.get("gate_entropy", 0.5), 0.5)
+    phi_floor = _finite_float(getattr(model.config, "phi_floor", 0.05), 0.05)
     sigma = min(1.0, max(0.0, _finite_float(model.config.noise_scale, 0.01) + gate_entropy))
-    return max(0.0, min(1.0, phi)), sigma
+    return max(phi_floor, min(1.0, phi)), sigma
 
 
 def _tensor_is_finite(value: Any) -> bool:
@@ -419,6 +420,8 @@ def _runtime_tick() -> Dict[str, Any]:
     if reset_info:
         model = get_model()
     phi, sigma = _current_phi_sigma(model)
+    prior_metrics = model.metrics_to_dict(model.last_metrics)
+    runtime_phase = runtime_tick_id / 10.0
     observation = {
         "timestamp": time.time(),
         "source": "autonomous_runtime_loop",
@@ -429,6 +432,12 @@ def _runtime_tick() -> Dict[str, Any]:
         "sigma": sigma,
         "tick_kind": "heartbeat_learning",
         "runtime_tick_id": runtime_tick_id,
+        "runtime_phase_sin": math.sin(runtime_phase),
+        "runtime_phase_cos": math.cos(runtime_phase),
+        "recent_drift": _finite_float(prior_metrics.get("z3_delta_norm", 0.0), 0.0),
+        "recent_gate": _finite_float(prior_metrics.get("mean_gate", 0.0), 0.0),
+        "recent_novelty": _finite_float(prior_metrics.get("mean_novelty", 0.0), 0.0),
+        "recent_useful_novelty": _finite_float(prior_metrics.get("useful_novelty", 0.0), 0.0),
         "language_ingestion_enabled": bool(_RUNTIME_LANGUAGE_CONFIG.get("enabled", False)),
     }
     world_output = _WORLD_MODEL.observe(observation, domain="runtime")
@@ -441,7 +450,10 @@ def _runtime_tick() -> Dict[str, Any]:
             "phi": phi,
             "sigma": sigma,
             "coherence": phi,
-            "drift": _finite_float(model.metrics_to_dict(model.last_metrics).get("z3_delta_norm", 0.0), 0.0),
+            "drift": _finite_float(prior_metrics.get("z3_delta_norm", 0.0), 0.0),
+            "gate": _finite_float(prior_metrics.get("mean_gate", 0.0), 0.0),
+            "novelty": _finite_float(prior_metrics.get("mean_novelty", 0.0), 0.0),
+            "useful_novelty": _finite_float(prior_metrics.get("useful_novelty", 0.0), 0.0),
             "regime": "autonomous_runtime",
         },
     )
@@ -451,7 +463,7 @@ def _runtime_tick() -> Dict[str, Any]:
     try:
         train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
         with torch.no_grad():
-            projection_output = model.forward(x, hard_gate=True, update_state=False, add_noise=False)
+            projection_output = model.forward(x, hard_gate=False, update_state=False, add_noise=False)
     except Exception as exc:
         error_text = str(exc).lower()
         if "nan" not in error_text and "non-finite" not in error_text and "inf" not in error_text:
@@ -461,7 +473,7 @@ def _runtime_tick() -> Dict[str, Any]:
         optimizer = _get_optimizer(model, float(os.environ.get("Z3_RUNTIME_LR", "0.001")))
         train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
         with torch.no_grad():
-            projection_output = model.forward(x, hard_gate=True, update_state=False, add_noise=False)
+            projection_output = model.forward(x, hard_gate=False, update_state=False, add_noise=False)
         train_metrics["self_healing_reset"] = reset_info
 
     language_result: Optional[Dict[str, Any]] = None
@@ -590,7 +602,7 @@ def train_step(request: TrainStepRequest) -> Dict[str, Any]:
     target = _tensor_from_vector(request.target, model.config.input_dim) if request.target is not None else None
     optimizer = _get_optimizer(model, request.learning_rate)
     metrics = model.train_step(optimizer, x, target=target, update_recurrent_state=True)
-    response = {"metrics": metrics, "projection": model.public_projection(model.step_runtime(x, hard_gate=True))}
+    response = {"metrics": metrics, "projection": model.public_projection(model.step_runtime(x, hard_gate=False))}
     manifest = _persist_if_requested(request.persist)
     if manifest:
         response["state_manifest"] = manifest
@@ -744,7 +756,7 @@ def integrated_observe(request: IntegratedObserveRequest) -> Dict[str, Any]:
     if request.train:
         optimizer = _get_optimizer(model, request.learning_rate)
         z3_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
-        z3_response: Dict[str, Any] = {"metrics": z3_metrics, "projection": model.public_projection(model.step_runtime(x, hard_gate=True))}
+        z3_response: Dict[str, Any] = {"metrics": z3_metrics, "projection": model.public_projection(model.step_runtime(x, hard_gate=False))}
     else:
         with torch.no_grad():
             neural_output = model.forward(x, hard_gate=request.hard_gate, update_state=True, add_noise=False)
