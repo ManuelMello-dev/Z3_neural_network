@@ -336,16 +336,30 @@ def _train_z3_on_language_observations(observations: List[Dict[str, Any]], *, le
         return {"trained": False, "reason": "no_text"}
     model = get_model()
     optimizer = _get_optimizer(model, learning_rate)
-    metrics = train_z3_on_language_window(
-        model,
-        optimizer,
-        texts,
-        truncation_steps=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("truncation_steps", 16))),
-        window_size=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("window_size", 24))),
-        stride=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("stride", 12))),
-        commit_recurrent_state=True,
-        add_noise=True,
-    )
+    try:
+        metrics = train_z3_on_language_window(
+            model,
+            optimizer,
+            texts,
+            truncation_steps=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("truncation_steps", 16))),
+            window_size=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("window_size", 24))),
+            stride=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("stride", 12))),
+            commit_recurrent_state=True,
+            add_noise=True,
+        )
+    except Exception as exc:
+        try:
+            optimizer.zero_grad(set_to_none=True)
+        except Exception:
+            pass
+        return {
+            "trained": False,
+            "reason": "language_sequence_training_failed",
+            "texts": len(texts),
+            "mode": "direct_language_sequence_window",
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:500],
+        }
     return {
         "trained": True,
         "texts": len(texts),

@@ -86,6 +86,30 @@ assert runtime.status_code == 200, runtime.text
 language = client.get("/language")
 assert language.status_code == 200, language.text
 assert language.json().get("dataset", {}).get("domain") == "language:corpus"
+
+main._LANGUAGE_STREAM.inline_text = (
+    "Z3 language validation segment carries enough words to pass the configured minimum word threshold and the observer should handle a simulated direct language training failure without returning an ASGI error while still allowing the remaining language observations to flow through memory and the world model"
+)
+main._LANGUAGE_STREAM._segments = []
+main._LANGUAGE_STREAM._offset = 0
+load_language_for_failure_test = client.post("/language/load")
+assert load_language_for_failure_test.status_code == 200, load_language_for_failure_test.text
+
+original_language_trainer = main.train_z3_on_language_window
+
+def _raise_language_training_error(*args, **kwargs):
+    raise RuntimeError("simulated language sequence training failure")
+
+main.train_z3_on_language_window = _raise_language_training_error
+try:
+    language_ingest_failure = client.post("/language/ingest", json={"batch_size": 1, "train": True, "persist": False, "learning_rate": 0.001})
+    assert language_ingest_failure.status_code == 200, language_ingest_failure.text
+    training_report = language_ingest_failure.json().get("language_training") or {}
+    assert training_report.get("trained") is False, training_report
+    assert training_report.get("reason") == "language_sequence_training_failed", training_report
+finally:
+    main.train_z3_on_language_window = original_language_trainer
+
 assert "running" in runtime.json()
 assert "language_schedule" in runtime.json()
 assert runtime.json()["language_schedule"].get("enabled") is True
