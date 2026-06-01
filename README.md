@@ -265,6 +265,8 @@ When `/language/ingest`, `/chat`, or scheduled runtime language ingestion is cal
 
 The corpus ingestor is attached to the live runtime model rather than a duplicate model, so language sequence training updates the same Z³ state used by the API membrane. Runtime status exposes `language_ingestor` diagnostics when the ingestor has been initialized, and state saves include `z3_corpus_ingestor.pt` alongside the neural, world-model, and resonant-memory artifacts.
 
+For production safety, the ingestor uses schema-versioned checkpoints, writes through a temporary file, keeps a `.previous` checkpoint, and quarantines corrupt checkpoint files before falling back to the previous copy. It also enforces maximum text size, minimum word count, optional recent-text deduplication, dropped-reason counters, training duration metrics, and a circuit breaker that pauses corpus training after repeated failures while keeping the rest of the runtime online.
+
 | Endpoint | Method | Purpose |
 |---|---|---|
 | `/language` | `GET` | Show language corpus/cache/remote-stream status. |
@@ -297,6 +299,13 @@ curl -X POST "$RAILWAY_PUBLIC_DOMAIN/language/ingest" \
 | `Z3_CORPUS_MAX_TRAIN_BATCHES_PER_FLUSH` | `1` | Upper bound on training batches processed during one flush. |
 | `Z3_CORPUS_CHECKPOINT_PATH` | `$Z3_STATE_DIR/z3_corpus_ingestor.pt` | Corpus ingestor checkpoint containing ingestion counters, buffer/provenance metadata, and optimizer state. |
 | `Z3_CORPUS_CHECKPOINT_EVERY_STEPS` | `25` | Save ingestor checkpoint every N successful language sequence updates; `0` disables automatic checkpointing. |
+| `Z3_CORPUS_MAX_TEXT_BYTES` | `262144` | Reject individual corpus segments larger than this byte limit. |
+| `Z3_CORPUS_DEDUPLICATE_TEXTS` | `true` | Reject recently seen duplicate text segments by content hash. |
+| `Z3_CORPUS_RECENT_HASHES_LIMIT` | `4096` | Number of recent text hashes retained for deduplication. |
+| `Z3_CORPUS_FAILURE_THRESHOLD` | `3` | Consecutive failed language training batches before opening the circuit breaker. |
+| `Z3_CORPUS_COOLDOWN_SECONDS` | `300` | Seconds to pause language training after the circuit breaker opens. |
+| `Z3_CORPUS_SLOW_TRAIN_SECONDS` | `30` | Training duration threshold that marks a batch as slow in diagnostics. |
+| `Z3_CORPUS_BACKLOG_WARNING_RATIO` | `0.80` | Buffer fill ratio that marks the ingestor as backlogged. |
 | `Z3_RUNTIME_LANGUAGE_ENABLED` | `true` | Enables periodic language ingestion during autonomous ticks. |
 | `Z3_RUNTIME_LANGUAGE_EVERY_TICKS` | `10` | Runs language ingestion every N autonomous ticks. |
 | `Z3_RUNTIME_LANGUAGE_BATCH_SIZE` | `5` | Number of language segments ingested per scheduled batch. |

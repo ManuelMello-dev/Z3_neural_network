@@ -4,12 +4,16 @@ This module centralizes the path from raw corpus text into real Z³ neural
 language-window training. It can either own a standalone neural model or attach
 to the live runtime model used by ``main.py``. The ingestor keeps deployment
 safety concerns local: environment parsing, bounded buffering, rollback after
-failed batches, diagnostics, and optional optimizer/ingestion checkpoint state.
+failed batches, diagnostics, checkpoint recovery, input pressure control,
+deduplication, and training circuit breaking.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import os
+import shutil
 import threading
 import time
 from collections import deque
@@ -39,6 +43,7 @@ else:
 TrainerFn = Callable[..., Dict[str, float]]
 OptimizerFactory = Callable[[Any, float], Any]
 ModelProvider = Callable[[], Any]
+CHECKPOINT_VERSION = 2
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -81,6 +86,15 @@ def _default_state_dir() -> Path:
     return Path(os.environ.get("Z3_STATE_DIR", os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/data" if Path("/data").exists() else "data")))
 
 
+def _stable_hash(payload: Any) -> str:
+    data = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+    return hashlib.blake2b(data, digest_size=16).hexdigest()
+
+
+def _text_digest(text: str) -> str:
+    return hashlib.blake2b((text or "").encode("utf-8", errors="ignore"), digest_size=16).hexdigest()
+
+
 @dataclass(frozen=True)
 class Z3CorpusIngestionConfig:
     """Runtime configuration for neural corpus ingestion."""
@@ -101,6 +115,13 @@ class Z3CorpusIngestionConfig:
     device: str = "cpu"
     add_noise: bool = True
     commit_recurrent_state: bool = True
+    max_text_bytes: int = 262_144
+    deduplicate_texts: bool = True
+    recent_hashes_limit: int = 4096
+    circuit_breaker_failure_threshold: int = 3
+    circuit_breaker_cooldown_seconds: float = 300.0
+    slow_train_seconds: float = 30.0
+    backlog_warning_ratio: float = 0.80
 
     @classmethod
     def from_env(cls) -> "Z3CorpusIngestionConfig":
@@ -125,6 +146,13 @@ class Z3CorpusIngestionConfig:
             device=os.getenv("Z3_CORPUS_DEVICE", "cpu").strip() or "cpu",
             add_noise=_env_bool("Z3_CORPUS_ADD_NOISE", True),
             commit_recurrent_state=_env_bool("Z3_CORPUS_COMMIT_RECURRENT_STATE", True),
+            max_text_bytes=_env_int("Z3_CORPUS_MAX_TEXT_BYTES", 262_144, minimum=256),
+            deduplicate_texts=_env_bool("Z3_CORPUS_DEDUPLICATE_TEXTS", True),
+            recent_hashes_limit=_env_int("Z3_CORPUS_RECENT_HASHES_LIMIT", 4096, minimum=1),
+            circuit_breaker_failure_threshold=_env_int("Z3_CORPUS_FAILURE_THRESHOLD", 3, minimum=1),
+            circuit_breaker_cooldown_seconds=_env_float("Z3_CORPUS_COOLDOWN_SECONDS", 300.0, minimum=0.0),
+            slow_train_seconds=_env_float("Z3_CORPUS_SLOW_TRAIN_SECONDS", 30.0, minimum=0.0),
+            backlog_warning_ratio=_env_float("Z3_CORPUS_BACKLOG_WARNING_RATIO", 0.80, minimum=0.0),
         )
 
 
@@ -147,14 +175,28 @@ class Z3CorpusNeuralIngestor:
         self._buffer: Deque[Tuple[str, Dict[str, Any]]] = deque(maxlen=max(1, self.config.max_buffer_texts))
         self._last_metrics: Dict[str, float] = {}
         self._last_error: str = ""
+        self._last_warning: str = ""
         self._trained_steps = 0
         self._texts_seen = 0
+        self._accepted_texts = 0
         self._dropped_texts = 0
+        self._duplicate_texts = 0
+        self._oversized_texts = 0
+        self._dropped_reasons: Dict[str, int] = {}
         self._failed_train_attempts = 0
+        self._consecutive_failures = 0
+        self._circuit_open_until = 0.0
+        self._circuit_opened_count = 0
         self._last_train_time = 0.0
+        self._last_train_duration = 0.0
+        self._max_train_duration = 0.0
         self._last_checkpoint_time = 0.0
+        self._last_checkpoint_version = 0
+        self._last_checkpoint_recovered_from = ""
         self._last_batch_size = 0
         self._last_provenance: List[Dict[str, Any]] = []
+        self._recent_hashes: Deque[str] = deque(maxlen=max(1, self.config.recent_hashes_limit))
+        self._recent_hash_set: set[str] = set()
         self._model_provider = model_provider
         self._optimizer_factory = optimizer_factory
         self._trainer = trainer or train_z3_on_language_window
@@ -178,6 +220,23 @@ class Z3CorpusNeuralIngestor:
             self.model = model
             self.optimizer = optimizer
             self._own_model = False
+
+    def pause_training(self, seconds: Optional[float] = None, *, reason: str = "operator_pause") -> Dict[str, Any]:
+        """Open the training circuit breaker for a bounded cooldown interval."""
+        cooldown = self.config.circuit_breaker_cooldown_seconds if seconds is None else max(0.0, float(seconds))
+        with self._lock:
+            self._circuit_open_until = time.time() + cooldown
+            self._circuit_opened_count += 1
+            self._last_warning = reason
+        return self.snapshot()
+
+    def resume_training(self) -> Dict[str, Any]:
+        """Close the training circuit breaker and reset consecutive failure pressure."""
+        with self._lock:
+            self._circuit_open_until = 0.0
+            self._consecutive_failures = 0
+            self._last_warning = ""
+        return self.snapshot()
 
     def _resolve_model(self) -> Any:
         if self._model_provider is not None:
@@ -233,17 +292,15 @@ class Z3CorpusNeuralIngestor:
         """Accept one corpus text sample and train if enough buffered text exists."""
         if not self.config.enabled:
             return self.snapshot()
-        text = (text or "").strip()
-        if len(text.split()) < self.config.min_words:
-            with self._lock:
-                self._dropped_texts += 1
+        accepted = self._prepare_text(text, metadata)
+        if accepted is None:
             return self.snapshot()
-        provenance = dict(metadata or {})
-        provenance.setdefault("received_at", time.time())
-        provenance.setdefault("word_count", len(text.split()))
         with self._lock:
-            self._buffer.append((text, provenance))
-            self._texts_seen += 1
+            if len(self._buffer) >= self.config.max_buffer_texts:
+                self._record_drop("buffer_full")
+                return self.snapshot()
+            self._buffer.append(accepted)
+            self._accepted_texts += 1
         return self.flush(force=False)
 
     def observe_observation(self, observation: Dict[str, Any]) -> Dict[str, Any]:
@@ -265,16 +322,19 @@ class Z3CorpusNeuralIngestor:
         return self.flush(force=False)
 
     def train_texts_now(self, texts: Sequence[str], metadata: Optional[Sequence[Dict[str, Any]]] = None) -> Dict[str, Any]:
-        """Train immediately on the provided texts without requiring the buffer threshold."""
+        """Train immediately on accepted texts without requiring the buffer threshold."""
         if not self.config.enabled:
             return self._training_report(False, reason="disabled", texts=0)
-        cleaned = [str(text or "").strip() for text in texts if str(text or "").strip()]
-        if not cleaned:
-            return self._training_report(False, reason="no_text", texts=0)
-        provenance = [dict(item) for item in (metadata or [])]
-        while len(provenance) < len(cleaned):
-            provenance.append({})
-        return self._train_batch(cleaned, provenance)
+        metadata_items = list(metadata or [])
+        accepted: List[Tuple[str, Dict[str, Any]]] = []
+        for index, text in enumerate(texts):
+            item_metadata = metadata_items[index] if index < len(metadata_items) else {}
+            prepared = self._prepare_text(str(text or ""), item_metadata)
+            if prepared is not None:
+                accepted.append(prepared)
+        if not accepted:
+            return self._training_report(False, reason="all_texts_rejected", texts=0, health_state=self.health_state())
+        return self._train_batch([item[0] for item in accepted], [item[1] for item in accepted])
 
     def flush(self, *, force: bool = False) -> Dict[str, Any]:
         """Run one or more training updates from the buffered corpus text."""
@@ -295,16 +355,95 @@ class Z3CorpusNeuralIngestor:
             if not report.get("trained"):
                 with self._lock:
                     for item in reversed(batch_items):
-                        self._buffer.appendleft(item)
+                        if len(self._buffer) < self.config.max_buffer_texts:
+                            self._buffer.appendleft(item)
+                        else:
+                            self._record_drop("rollback_buffer_full")
                 break
             trained_now += 1
         return self.snapshot()
 
+    def _prepare_text(self, text: str, metadata: Optional[Dict[str, Any]]) -> Optional[Tuple[str, Dict[str, Any]]]:
+        text = (text or "").strip()
+        with self._lock:
+            self._texts_seen += 1
+        if not text:
+            self._record_drop("empty_text")
+            return None
+        byte_count = len(text.encode("utf-8", errors="ignore"))
+        if byte_count > self.config.max_text_bytes:
+            with self._lock:
+                self._oversized_texts += 1
+            self._record_drop("oversized_text")
+            return None
+        word_count = len(text.split())
+        if word_count < self.config.min_words:
+            self._record_drop("too_few_words")
+            return None
+        digest = _text_digest(text)
+        if self.config.deduplicate_texts:
+            with self._lock:
+                if digest in self._recent_hash_set:
+                    self._duplicate_texts += 1
+                    self._record_drop("duplicate_text")
+                    return None
+                self._remember_hash(digest)
+        provenance = self._normalize_provenance(metadata or {}, digest=digest, byte_count=byte_count, word_count=word_count)
+        return text, provenance
+
+    def _normalize_provenance(self, metadata: Dict[str, Any], *, digest: str, byte_count: int, word_count: int) -> Dict[str, Any]:
+        allowed_scalar = (str, int, float, bool, type(None))
+        provenance: Dict[str, Any] = {}
+        for key, value in dict(metadata or {}).items():
+            if key in ("text", "content"):
+                continue
+            safe_key = str(key)[:80]
+            if isinstance(value, allowed_scalar):
+                provenance[safe_key] = value
+            else:
+                provenance[safe_key] = str(value)[:500]
+        provenance.setdefault("received_at", time.time())
+        provenance["word_count"] = int(word_count)
+        provenance["byte_count"] = int(byte_count)
+        provenance["text_hash"] = digest
+        provenance.setdefault("source", "unknown")
+        return provenance
+
+    def _remember_hash(self, digest: str) -> None:
+        if len(self._recent_hashes) == self._recent_hashes.maxlen and self._recent_hashes:
+            old = self._recent_hashes.popleft()
+            self._recent_hash_set.discard(old)
+        self._recent_hashes.append(digest)
+        self._recent_hash_set.add(digest)
+
+    def _record_drop(self, reason: str) -> None:
+        with self._lock:
+            self._dropped_texts += 1
+            self._dropped_reasons[reason] = self._dropped_reasons.get(reason, 0) + 1
+
+    def _circuit_open(self) -> bool:
+        return time.time() < self._circuit_open_until
+
+    def _open_circuit(self, reason: str) -> None:
+        with self._lock:
+            self._circuit_open_until = time.time() + float(self.config.circuit_breaker_cooldown_seconds)
+            self._circuit_opened_count += 1
+            self._last_warning = reason
+
     def _train_batch(self, texts: Sequence[str], provenance: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+        if self._circuit_open():
+            return self._training_report(
+                False,
+                reason="circuit_breaker_open",
+                texts=len(texts),
+                circuit_open_until=self._circuit_open_until,
+                health_state=self.health_state(),
+            )
         model = self._resolve_model()
         optimizer = self._resolve_optimizer()
         if model is None or optimizer is None or self._trainer is None:
-            return self._training_report(False, reason="unavailable", texts=len(texts))
+            return self._training_report(False, reason="unavailable", texts=len(texts), health_state=self.health_state())
+        started_at = time.time()
         try:
             metrics = self._trainer(
                 model,
@@ -316,35 +455,71 @@ class Z3CorpusNeuralIngestor:
                 commit_recurrent_state=bool(self.config.commit_recurrent_state),
                 add_noise=bool(self.config.add_noise),
             )
+            duration = time.time() - started_at
+            if not self._model_state_is_finite(model):
+                raise FloatingPointError("non_finite_model_state_after_corpus_training")
         except Exception as exc:
+            duration = time.time() - started_at
             try:
                 optimizer.zero_grad(set_to_none=True)
             except Exception:
                 pass
             with self._lock:
                 self._failed_train_attempts += 1
+                self._consecutive_failures += 1
+                self._last_train_duration = duration
+                self._max_train_duration = max(self._max_train_duration, duration)
                 self._last_error = f"Z3 corpus training failed: {exc}"
+                consecutive = self._consecutive_failures
+            if consecutive >= self.config.circuit_breaker_failure_threshold:
+                self._open_circuit("failure_threshold_exceeded")
             return self._training_report(
                 False,
                 reason="language_sequence_training_failed",
                 texts=len(texts),
                 error_type=type(exc).__name__,
                 error=str(exc)[:500],
+                duration_seconds=round(duration, 6),
+                health_state=self.health_state(),
             )
 
         now = time.time()
-        numeric_metrics = {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float))}
+        numeric_metrics = {k: float(v) for k, v in metrics.items() if isinstance(v, (int, float)) and math.isfinite(float(v))}
+        warning = ""
+        if self.config.slow_train_seconds > 0 and duration > self.config.slow_train_seconds:
+            warning = "slow_training_batch"
         with self._lock:
             self._last_metrics = numeric_metrics
             self._trained_steps += 1
+            self._consecutive_failures = 0
             self._last_train_time = now
+            self._last_train_duration = duration
+            self._max_train_duration = max(self._max_train_duration, duration)
             self._last_error = ""
+            self._last_warning = warning
             self._last_batch_size = len(texts)
             self._last_provenance = [dict(item) for item in provenance[-5:]]
             trained_steps = self._trained_steps
         if self.config.checkpoint_every_steps > 0 and trained_steps % self.config.checkpoint_every_steps == 0:
             self.save_checkpoint()
-        return self._training_report(True, texts=len(texts), metrics=numeric_metrics)
+        return self._training_report(True, texts=len(texts), metrics=numeric_metrics, duration_seconds=round(duration, 6), health_state=self.health_state())
+
+    def _model_state_is_finite(self, model: Any) -> bool:
+        if torch is None or model is None:
+            return True
+        try:
+            with torch.no_grad():
+                if hasattr(model, "parameters"):
+                    for parameter in model.parameters():
+                        if parameter is not None and not bool(torch.isfinite(parameter).all().item()):
+                            return False
+                if hasattr(model, "buffers"):
+                    for buffer in model.buffers():
+                        if buffer is not None and buffer.numel() > 0 and not bool(torch.isfinite(buffer).all().item()):
+                            return False
+        except Exception:
+            return True
+        return True
 
     def _training_report(self, trained: bool, *, texts: int, reason: str = "", metrics: Optional[Dict[str, float]] = None, **extra: Any) -> Dict[str, Any]:
         report: Dict[str, Any] = {
@@ -359,46 +534,73 @@ class Z3CorpusNeuralIngestor:
         report.update(extra)
         return report
 
+    def _payload(self) -> Dict[str, Any]:
+        with self._lock:
+            ingestor = {
+                "trained_steps": self._trained_steps,
+                "texts_seen": self._texts_seen,
+                "accepted_texts": self._accepted_texts,
+                "dropped_texts": self._dropped_texts,
+                "duplicate_texts": self._duplicate_texts,
+                "oversized_texts": self._oversized_texts,
+                "dropped_reasons": dict(self._dropped_reasons),
+                "failed_train_attempts": self._failed_train_attempts,
+                "consecutive_failures": self._consecutive_failures,
+                "circuit_open_until": self._circuit_open_until,
+                "circuit_opened_count": self._circuit_opened_count,
+                "last_metrics": dict(self._last_metrics),
+                "last_error": self._last_error,
+                "last_warning": self._last_warning,
+                "last_train_time": self._last_train_time,
+                "last_train_duration": self._last_train_duration,
+                "max_train_duration": self._max_train_duration,
+                "last_checkpoint_time": time.time(),
+                "last_checkpoint_version": CHECKPOINT_VERSION,
+                "last_checkpoint_recovered_from": self._last_checkpoint_recovered_from,
+                "last_batch_size": self._last_batch_size,
+                "last_provenance": list(self._last_provenance),
+                "buffer": list(self._buffer),
+                "recent_hashes": list(self._recent_hashes),
+            }
+            model = self.model
+            optimizer = self.optimizer
+        payload: Dict[str, Any] = {
+            "checkpoint_version": CHECKPOINT_VERSION,
+            "saved_at": time.time(),
+            "config": asdict(self.config),
+            "config_hash": _stable_hash(asdict(self.config)),
+            "ingestor": ingestor,
+            "own_model": self._own_model,
+        }
+        if self._own_model and model is not None:
+            payload["model_state_dict"] = model.state_dict()
+            payload["model_config"] = asdict(model.config)
+            payload["z3_state"] = model.z3_state.detach().cpu()
+            payload["zprime_state"] = model.zprime_state.detach().cpu()
+            payload["last_model_metrics"] = model.last_metrics.detach().cpu()
+        if optimizer is not None:
+            payload["optimizer_state_dict"] = optimizer.state_dict()
+        return payload
+
     def save_checkpoint(self) -> bool:
         """Persist ingestor metadata plus optional standalone model and optimizer state."""
         if not self.config.enabled or torch is None:
             return False
         path = Path(self.config.checkpoint_path)
+        if not str(path):
+            return False
         try:
-            with self._lock:
-                payload: Dict[str, Any] = {
-                    "config": asdict(self.config),
-                    "ingestor": {
-                        "trained_steps": self._trained_steps,
-                        "texts_seen": self._texts_seen,
-                        "dropped_texts": self._dropped_texts,
-                        "failed_train_attempts": self._failed_train_attempts,
-                        "last_metrics": dict(self._last_metrics),
-                        "last_error": self._last_error,
-                        "last_train_time": self._last_train_time,
-                        "last_checkpoint_time": time.time(),
-                        "last_batch_size": self._last_batch_size,
-                        "last_provenance": list(self._last_provenance),
-                        "buffer": list(self._buffer),
-                    },
-                    "own_model": self._own_model,
-                }
-                model = self.model
-                optimizer = self.optimizer
-            if self._own_model and model is not None:
-                payload["model_state_dict"] = model.state_dict()
-                payload["model_config"] = asdict(model.config)
-                payload["z3_state"] = model.z3_state.detach().cpu()
-                payload["zprime_state"] = model.zprime_state.detach().cpu()
-                payload["last_model_metrics"] = model.last_metrics.detach().cpu()
-            if optimizer is not None:
-                payload["optimizer_state_dict"] = optimizer.state_dict()
+            payload = self._payload()
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path = path.with_suffix(path.suffix + ".tmp")
+            previous_path = path.with_suffix(path.suffix + ".previous")
             torch.save(payload, tmp_path)
+            if path.exists():
+                shutil.copy2(path, previous_path)
             tmp_path.replace(path)
             with self._lock:
                 self._last_checkpoint_time = time.time()
+                self._last_checkpoint_version = CHECKPOINT_VERSION
             return True
         except Exception as exc:  # pragma: no cover
             with self._lock:
@@ -406,65 +608,149 @@ class Z3CorpusNeuralIngestor:
             return False
 
     def load_checkpoint(self, *, load_model: bool = False) -> bool:
-        """Restore persisted ingestor state and, when requested, standalone model state."""
+        """Restore persisted ingestor state with previous-checkpoint fallback."""
         if torch is None:
             return False
         path = Path(self.config.checkpoint_path)
         if not path.exists():
-            return False
+            previous_path = path.with_suffix(path.suffix + ".previous")
+            if not previous_path.exists():
+                return False
+            path = previous_path
+        candidates = [path]
+        previous = path.with_suffix(path.suffix + ".previous") if not str(path).endswith(".previous") else path
+        if previous.exists() and previous not in candidates:
+            candidates.append(previous)
+        errors: List[str] = []
+        for candidate in candidates:
+            try:
+                payload = torch.load(candidate, map_location=self.config.device)
+                self._restore_payload(payload, load_model=load_model)
+                with self._lock:
+                    self._last_checkpoint_recovered_from = str(candidate)
+                    self._last_error = ""
+                return True
+            except Exception as exc:  # pragma: no cover - intentionally handles corrupt checkpoints.
+                errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
+                self._quarantine_checkpoint(candidate)
+        with self._lock:
+            self._last_error = "Z3 corpus checkpoint restore failed: " + " | ".join(errors)[:800]
+        return False
+
+    def _restore_payload(self, payload: Dict[str, Any], *, load_model: bool) -> None:
+        version = int(payload.get("checkpoint_version", 1) or 1)
+        ingestor = dict(payload.get("ingestor") or {})
+        with self._lock:
+            self._trained_steps = int(ingestor.get("trained_steps", self._trained_steps) or 0)
+            self._texts_seen = int(ingestor.get("texts_seen", self._texts_seen) or 0)
+            self._accepted_texts = int(ingestor.get("accepted_texts", self._accepted_texts) or 0)
+            self._dropped_texts = int(ingestor.get("dropped_texts", self._dropped_texts) or 0)
+            self._duplicate_texts = int(ingestor.get("duplicate_texts", self._duplicate_texts) or 0)
+            self._oversized_texts = int(ingestor.get("oversized_texts", self._oversized_texts) or 0)
+            self._dropped_reasons = {str(k): int(v) for k, v in dict(ingestor.get("dropped_reasons") or {}).items() if isinstance(v, int)}
+            self._failed_train_attempts = int(ingestor.get("failed_train_attempts", self._failed_train_attempts) or 0)
+            self._consecutive_failures = int(ingestor.get("consecutive_failures", self._consecutive_failures) or 0)
+            self._circuit_open_until = float(ingestor.get("circuit_open_until", self._circuit_open_until) or 0.0)
+            self._circuit_opened_count = int(ingestor.get("circuit_opened_count", self._circuit_opened_count) or 0)
+            self._last_metrics = {str(k): float(v) for k, v in dict(ingestor.get("last_metrics") or {}).items() if isinstance(v, (int, float))}
+            self._last_error = str(ingestor.get("last_error") or "")
+            self._last_warning = str(ingestor.get("last_warning") or "")
+            self._last_train_time = float(ingestor.get("last_train_time", 0.0) or 0.0)
+            self._last_train_duration = float(ingestor.get("last_train_duration", 0.0) or 0.0)
+            self._max_train_duration = float(ingestor.get("max_train_duration", 0.0) or 0.0)
+            self._last_checkpoint_time = float(ingestor.get("last_checkpoint_time", 0.0) or 0.0)
+            self._last_checkpoint_version = int(ingestor.get("last_checkpoint_version", version) or version)
+            self._last_batch_size = int(ingestor.get("last_batch_size", 0) or 0)
+            self._last_provenance = [dict(item) for item in ingestor.get("last_provenance", []) if isinstance(item, dict)]
+            self._buffer.clear()
+            for item in ingestor.get("buffer", []):
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    self._buffer.append((str(item[0]), dict(item[1]) if isinstance(item[1], dict) else {}))
+            self._recent_hashes.clear()
+            self._recent_hash_set.clear()
+            for digest in ingestor.get("recent_hashes", []):
+                if isinstance(digest, str):
+                    self._remember_hash(digest)
+            if not self._recent_hashes:
+                for _, provenance in self._buffer:
+                    digest = str(provenance.get("text_hash") or "")
+                    if digest:
+                        self._remember_hash(digest)
+        if load_model and self._own_model and self.model is not None and payload.get("model_state_dict") is not None:
+            self.model.load_state_dict(payload["model_state_dict"], strict=False)
+            if payload.get("z3_state") is not None:
+                self.model.z3_state = payload["z3_state"].to(next(self.model.parameters()).device)
+            if payload.get("zprime_state") is not None:
+                self.model.zprime_state = payload["zprime_state"].to(next(self.model.parameters()).device)
+            if payload.get("last_model_metrics") is not None:
+                self.model.last_metrics = payload["last_model_metrics"].to(next(self.model.parameters()).device)
+        if self.optimizer is not None and payload.get("optimizer_state_dict") is not None:
+            self.optimizer.load_state_dict(payload["optimizer_state_dict"])
+
+    def _quarantine_checkpoint(self, path: Path) -> None:
         try:
-            payload = torch.load(path, map_location=self.config.device)
-            ingestor = dict(payload.get("ingestor") or {})
-            with self._lock:
-                self._trained_steps = int(ingestor.get("trained_steps", self._trained_steps) or 0)
-                self._texts_seen = int(ingestor.get("texts_seen", self._texts_seen) or 0)
-                self._dropped_texts = int(ingestor.get("dropped_texts", self._dropped_texts) or 0)
-                self._failed_train_attempts = int(ingestor.get("failed_train_attempts", self._failed_train_attempts) or 0)
-                self._last_metrics = {str(k): float(v) for k, v in dict(ingestor.get("last_metrics") or {}).items() if isinstance(v, (int, float))}
-                self._last_error = str(ingestor.get("last_error") or "")
-                self._last_train_time = float(ingestor.get("last_train_time", 0.0) or 0.0)
-                self._last_checkpoint_time = float(ingestor.get("last_checkpoint_time", 0.0) or 0.0)
-                self._last_batch_size = int(ingestor.get("last_batch_size", 0) or 0)
-                self._last_provenance = [dict(item) for item in ingestor.get("last_provenance", []) if isinstance(item, dict)]
-                for item in ingestor.get("buffer", []):
-                    if isinstance(item, (list, tuple)) and len(item) == 2:
-                        self._buffer.append((str(item[0]), dict(item[1]) if isinstance(item[1], dict) else {}))
-            if load_model and self._own_model and self.model is not None and payload.get("model_state_dict") is not None:
-                self.model.load_state_dict(payload["model_state_dict"], strict=False)
-                if payload.get("z3_state") is not None:
-                    self.model.z3_state = payload["z3_state"].to(next(self.model.parameters()).device)
-                if payload.get("zprime_state") is not None:
-                    self.model.zprime_state = payload["zprime_state"].to(next(self.model.parameters()).device)
-                if payload.get("last_model_metrics") is not None:
-                    self.model.last_metrics = payload["last_model_metrics"].to(next(self.model.parameters()).device)
-            if self.optimizer is not None and payload.get("optimizer_state_dict") is not None:
-                self.optimizer.load_state_dict(payload["optimizer_state_dict"])
-            return True
-        except Exception as exc:  # pragma: no cover
-            with self._lock:
-                self._last_error = f"Z3 corpus checkpoint restore failed: {exc}"
-            return False
+            if path.exists():
+                quarantine = path.with_suffix(path.suffix + f".corrupt.{int(time.time())}")
+                path.replace(quarantine)
+        except Exception:
+            pass
+
+    def health_state(self) -> str:
+        """Return a compact production health state for monitoring."""
+        now = time.time()
+        if not self.config.enabled:
+            return "disabled"
+        if self._circuit_open_until > now:
+            return "circuit_open"
+        if self._last_error:
+            return "degraded"
+        if len(self._buffer) >= max(1, int(self.config.max_buffer_texts * self.config.backlog_warning_ratio)):
+            return "backlogged"
+        if self._last_warning:
+            return "warning"
+        if not self.available:
+            return "unavailable"
+        return "ready"
 
     def snapshot(self) -> Dict[str, Any]:
         """Expose ingestion state for runtime diagnostics."""
         model = self._resolve_model()
         optimizer = self._resolve_optimizer() if model is not None else None
+        now = time.time()
+        checkpoint_path = Path(self.config.checkpoint_path) if self.config.checkpoint_path else None
         with self._lock:
             return {
                 "enabled": self.config.enabled,
                 "available": self.config.enabled and self._trainer is not None and model is not None and optimizer is not None,
+                "health_state": self.health_state(),
                 "own_model": self._own_model,
                 "buffer_size": len(self._buffer),
+                "buffer_capacity": self.config.max_buffer_texts,
+                "backlog_ratio": round(len(self._buffer) / max(1, self.config.max_buffer_texts), 6),
                 "texts_seen": self._texts_seen,
+                "accepted_texts": self._accepted_texts,
                 "dropped_texts": self._dropped_texts,
+                "duplicate_texts": self._duplicate_texts,
+                "oversized_texts": self._oversized_texts,
+                "dropped_reasons": dict(self._dropped_reasons),
                 "trained_steps": self._trained_steps,
                 "failed_train_attempts": self._failed_train_attempts,
+                "consecutive_failures": self._consecutive_failures,
+                "circuit_open": self._circuit_open_until > now,
+                "circuit_open_until": self._circuit_open_until,
+                "circuit_opened_count": self._circuit_opened_count,
                 "last_train_time": self._last_train_time,
+                "last_train_duration": self._last_train_duration,
+                "max_train_duration": self._max_train_duration,
                 "last_checkpoint_time": self._last_checkpoint_time,
+                "last_checkpoint_version": self._last_checkpoint_version,
+                "last_checkpoint_recovered_from": self._last_checkpoint_recovered_from,
                 "last_batch_size": self._last_batch_size,
                 "last_error": self._last_error,
+                "last_warning": self._last_warning,
                 "checkpoint_path": self.config.checkpoint_path,
-                "checkpoint_exists": Path(self.config.checkpoint_path).exists() if self.config.checkpoint_path else False,
+                "checkpoint_exists": checkpoint_path.exists() if checkpoint_path else False,
+                "checkpoint_previous_exists": checkpoint_path.with_suffix(checkpoint_path.suffix + ".previous").exists() if checkpoint_path else False,
                 "batch_size": self.config.batch_size,
                 "window_size": self.config.window_size,
                 "stride": self.config.stride,
@@ -472,9 +758,11 @@ class Z3CorpusNeuralIngestor:
                 "learning_rate": self.config.learning_rate,
                 "mode": self.config.mode,
                 "device": self.config.device,
+                "max_text_bytes": self.config.max_text_bytes,
+                "deduplicate_texts": self.config.deduplicate_texts,
                 "last_metrics": dict(self._last_metrics),
                 "last_provenance": list(self._last_provenance),
             }
 
 
-__all__ = ["Z3CorpusIngestionConfig", "Z3CorpusNeuralIngestor"]
+__all__ = ["CHECKPOINT_VERSION", "Z3CorpusIngestionConfig", "Z3CorpusNeuralIngestor"]

@@ -374,7 +374,9 @@ def _train_z3_on_language_observations(observations: List[Dict[str, Any]], *, le
         return {"trained": False, "reason": "no_text", "texts": 0, "mode": "canonical_corpus_neural_ingestor"}
     metadata = [{key: value for key, value in obs.items() if key not in ("text", "content")} for obs in observations]
     ingestor = _get_language_ingestor(batch_size=len(texts), learning_rate=learning_rate)
-    return ingestor.train_texts_now(texts, metadata=metadata)
+    report = ingestor.train_texts_now(texts, metadata=metadata)
+    report["ingestor_health"] = ingestor.health_state()
+    return report
 
 
 def _ingest_language_batch_for_runtime(*, batch_size: int, train: bool, learning_rate: float) -> Dict[str, Any]:
@@ -519,6 +521,7 @@ def _runtime_tick() -> Dict[str, Any]:
             "projection": model.public_projection(projection_output),
         },
         "language_ingestion": language_result,
+        "language_ingestor": _LANGUAGE_INGESTOR.snapshot() if _LANGUAGE_INGESTOR is not None else None,
         "language_config": dict(_RUNTIME_LANGUAGE_CONFIG),
     }
 
@@ -579,13 +582,21 @@ def interface() -> str:
 @app.get("/health")
 def health() -> Dict[str, Any]:
     model_loaded = _MODEL is not None
+    ingestor_snapshot = _LANGUAGE_INGESTOR.snapshot() if _LANGUAGE_INGESTOR is not None else None
+    ingestor_health = (ingestor_snapshot or {}).get("health_state", "not_initialized")
+    degraded_ingestor_states = {"circuit_open", "degraded", "backlogged", "unavailable"}
+    status = "ok" if IMPORT_ERROR is None else "degraded"
+    if ingestor_health in degraded_ingestor_states:
+        status = "degraded"
     return {
-        "status": "ok" if IMPORT_ERROR is None else "degraded",
+        "status": status,
         "torch_available": torch is not None,
         "model_loaded": model_loaded,
         "state_loaded": _STATE_LOADED,
         "import_error": IMPORT_ERROR,
         "state_store": _STATE_STORE.manifest(),
+        "language_ingestor_health": ingestor_health,
+        "language_ingestor": ingestor_snapshot,
         "runtime": runtime_status_payload(),
     }
 
