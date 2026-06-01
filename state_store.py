@@ -1,9 +1,9 @@
 """Durable state helpers for the Z³ neural runtime.
 
 Railway containers can restart, so learned in-memory state must be exported to a
-mounted volume or local data directory. This module intentionally stays small: it
-stores the PyTorch neural checkpoint separately from JSON-serializable world
-model and resonant memory state.
+mounted volume or local data directory. This module stores the PyTorch neural
+checkpoint separately from JSON-serializable world-model and resonant-memory
+state, and optionally persists the canonical corpus ingestor state.
 """
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ class StateStore:
         self.neural_path = self.state_dir / "z3_neural_dynamics.pt"
         self.world_model_path = self.state_dir / "world_model.json"
         self.memory_path = self.state_dir / "resonant_memory.json"
+        self.corpus_ingestor_path = self.state_dir / "z3_corpus_ingestor.pt"
         self.manifest_path = self.state_dir / "manifest.json"
 
     def manifest(self) -> Dict[str, Any]:
@@ -36,6 +37,7 @@ class StateStore:
             "neural_checkpoint": self.neural_path,
             "world_model": self.world_model_path,
             "resonant_memory": self.memory_path,
+            "corpus_ingestor": self.corpus_ingestor_path,
             "manifest": self.manifest_path,
         }
         return {
@@ -51,16 +53,27 @@ class StateStore:
             },
         }
 
-    def save_all(self, *, model: Any, world_model: Any, memory: Any) -> Dict[str, Any]:
+    def save_all(self, *, model: Any, world_model: Any, memory: Any, corpus_ingestor: Optional[Any] = None) -> Dict[str, Any]:
         saved_at = time.time()
         model.save_checkpoint(self.neural_path)
         self._write_json(self.world_model_path, world_model.save_state())
         self._write_json(self.memory_path, memory.export_state())
+        if corpus_ingestor is not None:
+            self._bind_corpus_ingestor_path(corpus_ingestor)
+            corpus_ingestor.save_checkpoint()
         manifest = {"saved_at": saved_at, **self.manifest()}
         self._write_json(self.manifest_path, manifest)
         return manifest
 
-    def load_all(self, *, model: Optional[Any], model_cls: Any, world_model: Any, memory: Any) -> Dict[str, Any]:
+    def load_all(
+        self,
+        *,
+        model: Optional[Any],
+        model_cls: Any,
+        world_model: Any,
+        memory: Any,
+        corpus_ingestor: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         loaded: Dict[str, Any] = {"loaded_at": time.time(), "loaded": {}}
         if self.neural_path.exists():
             loaded_model = model_cls.load_checkpoint(self.neural_path, map_location="cpu")
@@ -83,9 +96,20 @@ class StateStore:
         else:
             loaded["loaded"]["resonant_memory"] = False
 
+        if corpus_ingestor is not None:
+            self._bind_corpus_ingestor_path(corpus_ingestor)
+            loaded["loaded"]["corpus_ingestor"] = corpus_ingestor.load_checkpoint(load_model=False)
+        else:
+            loaded["loaded"]["corpus_ingestor"] = False
+
         loaded["manifest"] = self.manifest()
         loaded["model"] = model
         return loaded
+
+    def _bind_corpus_ingestor_path(self, corpus_ingestor: Any) -> None:
+        corpus_ingestor.config = corpus_ingestor.config.__class__(
+            **{**corpus_ingestor.config.__dict__, "checkpoint_path": str(self.corpus_ingestor_path)}
+        )
 
     @staticmethod
     def _write_json(path: Path, payload: Dict[str, Any]) -> None:

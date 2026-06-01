@@ -261,7 +261,9 @@ This is the first step from a manual endpoint demo toward a continuously pulsing
 
 The runtime now has a real corpus ingestion stream. `language_stream.py` can read operator-supplied text from `LANGUAGE_TRAINING_CORPUS_PATH`, `LANGUAGE_TRAINING_TEXT`, or the persisted language cache, and it can also initialize a Hugging Face streaming dataset. By default, the remote corpus source is `manu/project_gutenberg` with split `en`.
 
-When `/language/ingest` or scheduled runtime language ingestion is called with `train=true`, the runtime no longer only trains on an observation latent. It calls `z3_language_training.train_z3_on_language_window()`, which converts raw text into temporal language windows and trains `Z3NeuralDynamics.train_sequence_window()` directly.
+When `/language/ingest`, `/chat`, or scheduled runtime language ingestion is called with `train=true`, the runtime no longer only trains on an observation latent. It routes text through `corpus_neural_ingestor.Z3CorpusNeuralIngestor`, the canonical ingestion abstraction that buffers corpus text, preserves provenance, applies rollback on failed batches, and delegates real sequence learning to `z3_language_training.train_z3_on_language_window()`. That function converts raw text into temporal language windows and trains `Z3NeuralDynamics.train_sequence_window()` directly.
+
+The corpus ingestor is attached to the live runtime model rather than a duplicate model, so language sequence training updates the same Z³ state used by the API membrane. Runtime status exposes `language_ingestor` diagnostics when the ingestor has been initialized, and state saves include `z3_corpus_ingestor.pt` alongside the neural, world-model, and resonant-memory artifacts.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
@@ -290,6 +292,11 @@ curl -X POST "$RAILWAY_PUBLIC_DOMAIN/language/ingest" \
 | `DISABLE_REMOTE_CORPUS_STREAM` | empty | Set to `1` to disable remote dataset streaming. |
 | `LANGUAGE_TRAINING_BATCH_SIZE` | `25` | Default fetch/ingest batch size. |
 | `LANGUAGE_TRAINING_MIN_WORDS` | `24` | Minimum words required before a corpus segment is emitted. |
+| `Z3_CORPUS_MIN_WORDS` | `LANGUAGE_TRAINING_MIN_WORDS` | Minimum words accepted by the canonical neural ingestor before buffering. |
+| `Z3_CORPUS_BUFFER_TEXTS` | `256` | Maximum buffered corpus texts retained before training. |
+| `Z3_CORPUS_MAX_TRAIN_BATCHES_PER_FLUSH` | `1` | Upper bound on training batches processed during one flush. |
+| `Z3_CORPUS_CHECKPOINT_PATH` | `$Z3_STATE_DIR/z3_corpus_ingestor.pt` | Corpus ingestor checkpoint containing ingestion counters, buffer/provenance metadata, and optimizer state. |
+| `Z3_CORPUS_CHECKPOINT_EVERY_STEPS` | `25` | Save ingestor checkpoint every N successful language sequence updates; `0` disables automatic checkpointing. |
 | `Z3_RUNTIME_LANGUAGE_ENABLED` | `true` | Enables periodic language ingestion during autonomous ticks. |
 | `Z3_RUNTIME_LANGUAGE_EVERY_TICKS` | `10` | Runs language ingestion every N autonomous ticks. |
 | `Z3_RUNTIME_LANGUAGE_BATCH_SIZE` | `5` | Number of language segments ingested per scheduled batch. |

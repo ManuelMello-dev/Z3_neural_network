@@ -11,6 +11,7 @@ import math
 import os
 import threading
 import time
+from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -19,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from language_stream import LanguageStream
 from curriculum_stream import CurriculumStream
+from corpus_neural_ingestor import Z3CorpusIngestionConfig, Z3CorpusNeuralIngestor
 from z3_language_training import train_z3_on_language_window
 from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
@@ -53,6 +55,7 @@ _STATE_STORE = StateStore()
 _STATE_LOADED = False
 _RUNTIME_LOCK = threading.Lock()
 _OPTIMIZER = None
+_LANGUAGE_INGESTOR = None
 _RUNTIME_LOOP = None
 _RUNTIME_TICK_SEQUENCE = 0
 _RUNTIME_LANGUAGE_CONFIG: Dict[str, Any] = {
@@ -182,7 +185,7 @@ def ensure_runtime_loaded() -> Any:
         if _MODEL is None:
             _MODEL = Z3NeuralDynamics()
         if not _STATE_LOADED:
-            loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY)
+            loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR)
             _MODEL = loaded.get("model") or _MODEL
             _STATE_LOADED = True
         return _MODEL
@@ -291,12 +294,47 @@ def _persist_if_requested(persist: bool) -> Optional[Dict[str, Any]]:
     if not persist:
         return None
     model = get_model()
-    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY)
+    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR)
 
 
 def _runtime_save() -> Dict[str, Any]:
     model = get_model()
-    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY)
+    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR)
+
+
+def _language_ingestor_config(*, batch_size: Optional[int] = None, learning_rate: Optional[float] = None) -> Z3CorpusIngestionConfig:
+    """Build the canonical ingestor config from env plus live runtime overrides."""
+    base = Z3CorpusIngestionConfig.from_env()
+    return replace(
+        base,
+        batch_size=max(1, int(batch_size if batch_size is not None else _RUNTIME_LANGUAGE_CONFIG.get("batch_size", base.batch_size))),
+        learning_rate=float(learning_rate if learning_rate is not None else _RUNTIME_LANGUAGE_CONFIG.get("learning_rate", base.learning_rate)),
+        window_size=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("window_size", base.window_size))),
+        stride=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("stride", base.stride))),
+        truncation_steps=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("truncation_steps", base.truncation_steps))),
+    )
+
+
+def _get_language_ingestor(*, batch_size: Optional[int] = None, learning_rate: Optional[float] = None) -> Z3CorpusNeuralIngestor:
+    """Return the canonical language-training ingestor attached to the live model."""
+    global _LANGUAGE_INGESTOR
+    model = get_model()
+    config = _language_ingestor_config(batch_size=batch_size, learning_rate=learning_rate)
+    optimizer = _get_optimizer(model, config.learning_rate)
+    if _LANGUAGE_INGESTOR is None:
+        _LANGUAGE_INGESTOR = Z3CorpusNeuralIngestor(
+            config,
+            model=model,
+            optimizer=optimizer,
+            trainer=train_z3_on_language_window,
+            own_model=False,
+        )
+    else:
+        _LANGUAGE_INGESTOR.config = config
+        _LANGUAGE_INGESTOR.attach_runtime(model=model, optimizer=optimizer)
+        # Keep the monkeypatch-friendly module symbol as the active trainer.
+        _LANGUAGE_INGESTOR._trainer = train_z3_on_language_window
+    return _LANGUAGE_INGESTOR
 
 
 def _runtime_language_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -329,43 +367,14 @@ def _runtime_curriculum_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]
 
 
 def _train_z3_on_language_observations(observations: List[Dict[str, Any]], *, learning_rate: float) -> Dict[str, Any]:
-    """Train Z³ directly on corpus text sequence windows, not only observation latents."""
+    """Train Z³ directly on corpus text sequence windows through the canonical ingestor."""
     texts = [str(obs.get("text") or obs.get("content") or "").strip() for obs in observations]
     texts = [text for text in texts if text]
     if not texts:
-        return {"trained": False, "reason": "no_text"}
-    model = get_model()
-    optimizer = _get_optimizer(model, learning_rate)
-    try:
-        metrics = train_z3_on_language_window(
-            model,
-            optimizer,
-            texts,
-            truncation_steps=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("truncation_steps", 16))),
-            window_size=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("window_size", 24))),
-            stride=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("stride", 12))),
-            commit_recurrent_state=True,
-            add_noise=True,
-        )
-    except Exception as exc:
-        try:
-            optimizer.zero_grad(set_to_none=True)
-        except Exception:
-            pass
-        return {
-            "trained": False,
-            "reason": "language_sequence_training_failed",
-            "texts": len(texts),
-            "mode": "direct_language_sequence_window",
-            "error_type": type(exc).__name__,
-            "error": str(exc)[:500],
-        }
-    return {
-        "trained": True,
-        "texts": len(texts),
-        "mode": "direct_language_sequence_window",
-        "metrics": metrics,
-    }
+        return {"trained": False, "reason": "no_text", "texts": 0, "mode": "canonical_corpus_neural_ingestor"}
+    metadata = [{key: value for key, value in obs.items() if key not in ("text", "content")} for obs in observations]
+    ingestor = _get_language_ingestor(batch_size=len(texts), learning_rate=learning_rate)
+    return ingestor.train_texts_now(texts, metadata=metadata)
 
 
 def _ingest_language_batch_for_runtime(*, batch_size: int, train: bool, learning_rate: float) -> Dict[str, Any]:
@@ -532,6 +541,8 @@ def runtime_status_payload() -> Dict[str, Any]:
     payload = get_runtime_loop().status()
     payload["language_schedule"] = dict(_RUNTIME_LANGUAGE_CONFIG)
     payload["language_stream"] = _LANGUAGE_STREAM.status()
+    if _LANGUAGE_INGESTOR is not None:
+        payload["language_ingestor"] = _LANGUAGE_INGESTOR.snapshot()
     return payload
 
 
@@ -627,10 +638,11 @@ def train_step(request: TrainStepRequest) -> Dict[str, Any]:
 def chat(request: ChatRequest) -> Dict[str, Any]:
     """Observe a chatbox message as live language input for Z³ testing."""
     observation = LanguageStream.text_to_observation(request.message, source="chatbox")
+    language_training = _train_z3_on_language_observations([observation], learning_rate=request.learning_rate) if request.train else None
     integrated = IntegratedObserveRequest(
         observation=observation,
         domain="language:chat",
-        train=request.train,
+        train=False,
         persist=request.persist,
         learning_rate=request.learning_rate,
     )
@@ -639,6 +651,7 @@ def chat(request: ChatRequest) -> Dict[str, Any]:
         "response": "Message observed by the Z³ language runtime.",
         "domain": "language:chat",
         "language_ingested": True,
+        "language_training": language_training,
         "observation": observation,
         "result": result,
     }
@@ -811,6 +824,7 @@ def infra_sync() -> Dict[str, Any]:
         "world_model": _WORLD_MODEL.get_state(),
         "memory": _MEMORY.get_snapshot(recent_ring_count=5).get("metrics", {}),
         "language": _LANGUAGE_STREAM.status(),
+        "language_ingestor": _LANGUAGE_INGESTOR.snapshot() if _LANGUAGE_INGESTOR is not None else None,
         "curriculum": _CURRICULUM_STREAM.status(),
     }
     return _INFRA.sync_snapshot(snapshot)
@@ -824,14 +838,14 @@ def state_manifest() -> Dict[str, Any]:
 @app.post("/state/save")
 def state_save() -> Dict[str, Any]:
     model = get_model()
-    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY)
+    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR)
 
 
 @app.post("/state/load")
 def state_load() -> Dict[str, Any]:
     global _MODEL, _STATE_LOADED
     _require_torch()
-    loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY)
+    loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR)
     _MODEL = loaded.pop("model")
     _STATE_LOADED = True
     return loaded
