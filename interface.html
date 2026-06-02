@@ -1420,7 +1420,7 @@
     ═══════════════════════════════════════════════════ -->
     <div class="panel" id="panel-chat">
       <div class="panel-title">Chat Interface <span class="endpoint-tag">POST /chat</span></div>
-      <p class="panel-desc">Send language messages directly through the Z³ observation pipeline: text → world model → resonant memory → neural runtime. The system observes your message as live language input.</p>
+      <p class="panel-desc">Send language messages through the full Z³ loop: text → world model → resonant memory → neural runtime → response adapter. The system now observes the message and expresses a grounded response from its current state.</p>
       <div class="card">
         <div class="card-body">
           <div class="chat-window" id="chat-window">
@@ -2115,11 +2115,15 @@ async function runChat() {
       learning_rate: parseFloat($('chat-lr').value),
     };
     const d = await req('/chat', { method: 'POST', body: JSON.stringify(body) });
-    const phi = d.result && d.result.z3 && d.result.z3.metrics && d.result.z3.metrics.mean_coherence;
+    const phi = d.expression && d.expression.coherence != null ? d.expression.coherence : (d.result && d.result.z3 && d.result.z3.metrics && d.result.z3.metrics.mean_coherence);
     const rings = d.result && d.result.memory && d.result.memory.accessible_rings;
+    const regime = d.expression && d.expression.regime;
+    const confidence = d.expression && d.expression.confidence;
     const meta = [
       phi != null ? `φ=${phi.toFixed(3)}` : null,
       rings != null ? `rings=${rings}` : null,
+      regime ? `regime=${regime}` : null,
+      confidence != null ? `conf=${confidence.toFixed(3)}` : null,
       `domain=${d.domain || 'language:chat'}`,
     ].filter(Boolean).join(' · ');
     appendChatMsg('z3', d.response || 'Observation integrated.', meta);

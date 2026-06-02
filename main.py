@@ -24,6 +24,7 @@ from corpus_neural_ingestor import Z3CorpusIngestionConfig, Z3CorpusNeuralIngest
 from z3_language_training import train_z3_on_language_window
 from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
+from response_adapter import build_z3_expression
 from runtime_loop import AutonomousRuntimeLoop, RuntimeLoopConfig
 from state_store import StateStore
 from world_model import OnlineWorldModel
@@ -647,7 +648,7 @@ def train_step(request: TrainStepRequest) -> Dict[str, Any]:
 
 @app.post("/chat")
 def chat(request: ChatRequest) -> Dict[str, Any]:
-    """Observe a chatbox message as live language input for Z³ testing."""
+    """Observe a chatbox message and express a state-grounded Z³ response."""
     observation = LanguageStream.text_to_observation(request.message, source="chatbox")
     language_training = _train_z3_on_language_observations([observation], learning_rate=request.learning_rate) if request.train else None
     integrated = IntegratedObserveRequest(
@@ -658,11 +659,19 @@ def chat(request: ChatRequest) -> Dict[str, Any]:
         learning_rate=request.learning_rate,
     )
     result = integrated_observe(integrated)
+    expression = build_z3_expression(
+        message=request.message,
+        observation=observation,
+        integrated_result=result,
+        language_training=language_training,
+    )
+    expression_payload = expression.to_dict()
     return {
-        "response": "Message observed by the Z³ language runtime.",
+        "response": expression.response,
         "domain": "language:chat",
         "language_ingested": True,
         "language_training": language_training,
+        "expression": expression_payload,
         "observation": observation,
         "result": result,
     }

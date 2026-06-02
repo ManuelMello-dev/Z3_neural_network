@@ -218,6 +218,12 @@ curl -X POST "$RAILWAY_PUBLIC_DOMAIN/observe" \
 
 The response includes the generated 16-dimensional Z³ input vector, world-model losses and novelty, resonant-memory confidence and matches, and the resulting Z³ projection.
 
+## First Mouth Layer: State-Grounded Chat Expression
+
+The runtime now includes `response_adapter.py`, a deterministic mouth layer for `/chat`. The adapter does not bypass Z³ with a hardcoded chatbot answer. It takes the live chat message, the integrated observation result, world-model novelty/loss, resonant-memory confidence/salience, and Z³ neural metrics, then expresses a compact response grounded in those measured signals.
+
+`POST /chat` now returns both a human-readable `response` string and a machine-readable `expression` object with fields such as `regime`, `intent`, `confidence`, `coherence`, `novelty`, `gate`, `drift`, `memory_resonance`, `salience`, and the trace of signals used to form the expression. This is the first step from passive language observation toward an actual perception → memory → Z³ → expression loop.
+
 ## Railway Persistence
 
 For persistence across Railway restarts, attach a Railway volume and set:
@@ -273,7 +279,7 @@ For production safety, the ingestor uses schema-versioned checkpoints, writes th
 | `/language/load` | `POST` | Load local corpus text or initialize the configured remote corpus stream. |
 | `/language/fetch` | `POST` | Fetch converted language observations without ingesting them. |
 | `/language/ingest` | `POST` | Feed a language batch through world model, resonant memory, and Z³; with `train=true`, also run direct corpus sequence training. |
-| `/chat` | `POST` | Send one live chatbox message into Z³ as `language:chat`. |
+| `/chat` | `POST` | Send one live chatbox message into Z³ as `language:chat`, then return a state-grounded response from the response adapter. |
 
 Example:
 
