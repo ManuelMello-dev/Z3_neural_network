@@ -341,3 +341,9 @@ The new infrastructure endpoints are:
 
 The integrated observation pathway now attempts to write each observation to the configured infrastructure backends after it passes through the world model, resonant memory, and Z³. This means `/observe`, manual language ingestion, chatbox interaction, and scheduled language ingestion can become durable across Qdrant, Redis, and Postgres when those Railway variables are connected.
 
+
+## Production conscience membrane
+
+This repository now includes a production-shaped conscience membrane in `conscience.py`, governed by the external policy file `config/conscience_policy.json`. The membrane evaluates proposals using current input context, online world-model metrics, resonant memory output, and Z³ metrics before neural state mutation. It also exposes auditable API endpoints at `/conscience`, `/conscience/policy`, `/conscience/evaluate`, and `/conscience/outcome`.
+
+See `CONSCIENCE_PRODUCTION.md` for the implementation map, validation commands, endpoint semantics, and calibration workflow.

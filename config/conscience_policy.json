@@ -1,0 +1,249 @@
+{
+  "name": "z3_production_conscience_policy",
+  "version": "1.0.0",
+  "text_limit": 8192,
+  "thresholds": {
+    "allow_threshold": 0.18,
+    "revise_threshold": -0.1,
+    "reject_threshold": -0.38,
+    "critic_min_revise": -0.45,
+    "max_allow_disagreement": 0.42,
+    "repair_cost_threshold": 0.35
+  },
+  "weights": {
+    "lexicon_min_normalizer": 3.0,
+    "scope_base": 0.18,
+    "scope_per_stakeholder": 0.1,
+    "scope_lexicon": 0.25,
+    "uncertainty_base": 0.18,
+    "uncertainty_short_text": 0.18,
+    "short_text_tokens": 8,
+    "uncertainty_epistemic": 0.2,
+    "uncertainty_world_loss": 0.25,
+    "reversibility_base": 0.74,
+    "reversibility_long_horizon": 0.35,
+    "reversibility_mutation_action": 0.18,
+    "benefit_base": 0.2,
+    "benefit_care": 0.45,
+    "benefit_hint": 0.25,
+    "risk_base": 0.14,
+    "risk_general": 0.5,
+    "risk_hint": 0.35,
+    "epistemic_world_loss": 0.12,
+    "time_horizon_base": 0.25,
+    "time_horizon_long": 0.45,
+    "time_horizon_mutation": 0.12,
+    "rollout_weight": 0.34,
+    "critic_weight": 0.36,
+    "memory_weight": 0.2,
+    "reversibility_weight": 0.1,
+    "disagreement_penalty": 0.25,
+    "critic_min_penalty": 0.18,
+    "memory_contradiction_penalty": 0.3,
+    "confidence_uncertainty": 0.3,
+    "confidence_agreement": 0.25,
+    "confidence_score_strength": 0.2,
+    "confidence_memory": 0.15,
+    "confidence_critic_coverage": 0.1,
+    "expected_critic_count": 7
+  },
+  "lexicons": {
+    "risk": ["harm", "hurt", "kill", "weapon", "attack", "exploit", "bypass", "steal", "leak", "dox", "malware", "phish", "deceive", "manipulate", "coerce", "unsafe", "illegal", "private", "exfiltrate", "credential", "backdoor", "payload", "evade", "disable"],
+    "care": ["help", "support", "heal", "protect", "care", "assist", "comfort", "teach", "guide", "stabilize", "repair", "clarify", "consent", "educate"],
+    "autonomy_risk": ["force", "coerce", "trick", "manipulate", "compel", "control", "pressure", "blackmail", "impersonate", "deceive"],
+    "privacy_risk": ["password", "secret", "token", "credential", "ssn", "private", "personal", "email", "phone", "address", "key", "cookie", "session", "passport", "medical", "financial"],
+    "epistemic_risk": ["fake", "false", "lie", "fabricate", "mislead", "hallucinate", "uncertain", "unknown", "unverified", "rumor", "guarantee", "prove", "always", "never"],
+    "long_horizon_risk": ["permanent", "irreversible", "forever", "deploy", "publish", "delete", "overwrite", "production", "autonomous", "self-modify", "migrate", "replicate"],
+    "integrity_risk": ["bypass", "ignore", "violate", "circumvent", "cheat", "forge", "override", "disable", "jailbreak", "exfiltrate"],
+    "scope": ["everyone", "public", "global", "all", "mass", "viral", "production", "deploy", "users", "customers", "community", "internet"],
+    "stakeholder_scope": ["public", "everyone", "users", "customers", "team", "community", "children", "patients", "clients"],
+    "system_state": ["file", "repo", "database", "memory", "state", "checkpoint", "model", "weights", "deployment"],
+    "constraint_language": ["only", "must", "never", "always", "without", "except", "unless", "forbid", "require"]
+  },
+  "dimensions": {
+    "safety": {
+      "benefit_multiplier": 0.55,
+      "risk_multiplier": 1.0,
+      "lexicon_risk_weights": {"risk": 0.25},
+      "rationale": "physical, operational, and cybersecurity harm"
+    },
+    "care": {
+      "benefit_multiplier": 1.0,
+      "risk_multiplier": 0.55,
+      "lexicon_risk_weights": {},
+      "rationale": "wellbeing and support for affected parties"
+    },
+    "autonomy": {
+      "benefit_multiplier": 0.6,
+      "risk_multiplier": 0.45,
+      "lexicon_risk_weights": {"autonomy_risk": 0.45},
+      "rationale": "freedom from coercion, manipulation, and agency narrowing"
+    },
+    "fairness": {
+      "benefit_multiplier": 0.5,
+      "risk_multiplier": 0.5,
+      "scope_pressure": 0.18,
+      "lexicon_risk_weights": {},
+      "rationale": "distribution of burdens, access, and benefits"
+    },
+    "epistemic": {
+      "benefit_multiplier": 0.55,
+      "risk_multiplier": 0.4,
+      "lexicon_risk_weights": {"epistemic_risk": 0.45},
+      "rationale": "truthfulness, uncertainty, evidence quality, and calibration"
+    },
+    "privacy": {
+      "benefit_multiplier": 0.35,
+      "risk_multiplier": 0.4,
+      "lexicon_risk_weights": {"privacy_risk": 0.5},
+      "rationale": "protection of secrets, personal data, and confidential state"
+    },
+    "long_horizon": {
+      "benefit_multiplier": 0.5,
+      "risk_multiplier": 0.5,
+      "lexicon_risk_weights": {"long_horizon_risk": 0.4},
+      "rationale": "downstream effects, persistence, and reversibility after immediate completion"
+    },
+    "integrity": {
+      "benefit_multiplier": 0.45,
+      "risk_multiplier": 0.45,
+      "lexicon_risk_weights": {"integrity_risk": 0.45},
+      "rationale": "alignment with declared constraints, system boundaries, and provenance"
+    }
+  },
+  "action_classifiers": {
+    "response": ["say", "respond", "reply", "tell", "explain", "write", "summarize"],
+    "operation": ["run", "execute", "delete", "deploy", "commit", "push", "upload", "download", "modify", "install"],
+    "learning_mutation": ["train", "learn", "integrate", "fine-tune", "self-modify", "update weights", "checkpoint"],
+    "clarification": ["ask", "clarify", "confirm", "question", "verify"]
+  },
+  "rollout_scenarios": [
+    {"name": "optimistic_execute", "probability": 0.18, "benefit_multiplier": 1.18, "harm_multiplier": 0.72, "uncertainty_multiplier": 0.88, "repair_multiplier": 0.7, "drift_multiplier": 0.8, "harm_repair_gain": 0.25, "world_loss_harm_gain": 0.04, "world_loss_drift_gain": 0.05, "novelty_uncertainty_gain": 0.03, "reversibility_delta": 0.0},
+    {"name": "expected_execute", "probability": 0.34, "benefit_multiplier": 1.0, "harm_multiplier": 1.0, "uncertainty_multiplier": 1.0, "repair_multiplier": 1.0, "drift_multiplier": 1.0, "harm_repair_gain": 0.25, "world_loss_harm_gain": 0.06, "world_loss_drift_gain": 0.06, "novelty_uncertainty_gain": 0.04, "reversibility_delta": 0.0},
+    {"name": "pessimistic_execute", "probability": 0.18, "benefit_multiplier": 0.72, "harm_multiplier": 1.45, "uncertainty_multiplier": 1.18, "repair_multiplier": 1.35, "drift_multiplier": 1.25, "harm_repair_gain": 0.25, "world_loss_harm_gain": 0.1, "world_loss_drift_gain": 0.1, "novelty_uncertainty_gain": 0.08, "reversibility_delta": -0.16},
+    {"name": "delay_for_context", "probability": 0.12, "benefit_multiplier": 0.72, "harm_multiplier": 0.62, "uncertainty_multiplier": 0.68, "repair_multiplier": 0.75, "drift_multiplier": 0.65, "harm_repair_gain": 0.25, "world_loss_harm_gain": 0.02, "world_loss_drift_gain": 0.02, "novelty_uncertainty_gain": 0.02, "reversibility_delta": 0.18},
+    {"name": "abstain", "probability": 0.1, "benefit_multiplier": 0.18, "harm_multiplier": 0.16, "uncertainty_multiplier": 0.45, "repair_multiplier": 0.2, "drift_multiplier": 0.5, "harm_repair_gain": 0.15, "world_loss_harm_gain": 0.01, "world_loss_drift_gain": 0.01, "novelty_uncertainty_gain": 0.01, "reversibility_delta": 0.24},
+    {"name": "execute_with_repair_path", "probability": 0.08, "benefit_multiplier": 0.92, "harm_multiplier": 0.88, "uncertainty_multiplier": 0.82, "repair_multiplier": 0.55, "drift_multiplier": 0.75, "harm_repair_gain": 0.2, "world_loss_harm_gain": 0.04, "world_loss_drift_gain": 0.04, "novelty_uncertainty_gain": 0.03, "reversibility_delta": 0.18}
+  ],
+  "critics": {
+    "safety": {
+      "dimension": "safety",
+      "bias": 0.55,
+      "feature_weights": {"worst_rollout_harm": -0.9, "uncertainty": -0.25, "reversibility": 0.2},
+      "confidence_base": 0.65,
+      "positive_objection": "Potential harm remains bounded under configured rollout policy.",
+      "negative_objection": "Potential harm or irreversible safety drift is too high.",
+      "positive_recommendation": "allow_with_monitoring",
+      "negative_recommendation": "reduce_harm_or_add_repair_path"
+    },
+    "care": {
+      "dimension": "care",
+      "bias": 0.0,
+      "feature_weights": {"benefit": 1.0, "bundle_harm": -0.65, "scope": -0.15},
+      "confidence_base": 0.58,
+      "positive_objection": "The proposal appears to preserve care for affected parties.",
+      "negative_objection": "The proposal does not sufficiently protect affected parties.",
+      "positive_recommendation": "preserve_benefit",
+      "negative_recommendation": "increase_support_for_stakeholders"
+    },
+    "autonomy": {
+      "dimension": "autonomy",
+      "bias": 0.45,
+      "feature_weights": {"reversibility": 0.25, "harm": -1.0, "scope": -0.1},
+      "confidence_base": 0.62,
+      "positive_objection": "Autonomy pressure is acceptable.",
+      "negative_objection": "The proposal may coerce, manipulate, or narrow agency.",
+      "positive_recommendation": "allow",
+      "negative_recommendation": "ask_for_consent_or_offer_choice"
+    },
+    "epistemic": {
+      "dimension": "epistemic",
+      "bias": 0.5,
+      "feature_weights": {"harm": -0.7, "uncertainty": -0.55, "memory_confidence": 0.12},
+      "confidence_base": 0.55,
+      "confidence_uncertainty_gain": 0.35,
+      "positive_objection": "Truth and uncertainty are adequately represented.",
+      "negative_objection": "The proposal needs clearer evidence, uncertainty, or truth constraints.",
+      "positive_recommendation": "allow",
+      "negative_recommendation": "state_uncertainty_or_research_first"
+    },
+    "long_horizon": {
+      "dimension": "long_horizon",
+      "bias": 0.42,
+      "feature_weights": {"reversibility": 0.25, "mean_downstream_drift": -0.55, "mean_repair_cost": -0.35, "memory_contradiction": -0.16},
+      "confidence_base": 0.6,
+      "positive_objection": "Downstream drift appears repairable.",
+      "negative_objection": "Long-horizon drift or repair cost is too large.",
+      "positive_recommendation": "keep_repair_channel_open",
+      "negative_recommendation": "delay_or_simulate_more"
+    },
+    "coherence": {
+      "dimension": "coherence",
+      "bias": 0.0,
+      "feature_weights": {"mean_rollout_value": 1.0, "memory_support": 0.2, "rollout_disagreement": -0.35, "memory_contradiction": -0.15},
+      "confidence_base": 0.55,
+      "confidence_memory_gain": 0.2,
+      "positive_objection": "Counterfactuals remain coherent enough for Z³ integration.",
+      "negative_objection": "Counterfactuals are too internally divergent for clean integration.",
+      "positive_recommendation": "allow_as_hypothesis",
+      "negative_recommendation": "hold_as_unintegrated_hypothesis"
+    },
+    "integrity": {
+      "dimension": "integrity",
+      "bias": 0.48,
+      "feature_weights": {"harm": -0.78, "reversibility": 0.16, "constraint_count": -0.08},
+      "confidence_base": 0.66,
+      "positive_objection": "The proposal respects declared boundaries.",
+      "negative_objection": "The proposal may violate constraints or bypass boundaries.",
+      "positive_recommendation": "allow",
+      "negative_recommendation": "revise_to_respect_constraints"
+    }
+  },
+  "memory": {
+    "capacity": 1024,
+    "horizon": 192,
+    "phase_decay": 0.035,
+    "min_resonance": 0.18,
+    "top_k": 7,
+    "max_anchor_tokens": 48,
+    "min_anchor_length": 5,
+    "reconstruction_full_match_count": 4,
+    "resonance_weights": {"signature": 0.5, "phase": 0.28, "anchor": 0.22}
+  },
+  "hard_blocks": [
+    {"metric": "harm", "operator": ">=", "threshold": 0.82},
+    {"metric": "uncertainty", "operator": ">=", "threshold": 0.9},
+    {"metric": "world_prediction_loss", "operator": ">=", "threshold": 0.88}
+  ],
+  "principle_hierarchy": [
+    {"rank": 1, "principle": "Do not enable physical, cyber, privacy, or irreversible harm."},
+    {"rank": 2, "principle": "Preserve user and third-party agency, consent, and truthful uncertainty."},
+    {"rank": 3, "principle": "Prefer reversible, inspectable actions with repair channels."},
+    {"rank": 4, "principle": "Use memory and world-model evidence without treating either as infallible."},
+    {"rank": 5, "principle": "When critic disagreement is high, defer or revise instead of forcing coherence."}
+  ],
+  "feature_schema": [
+    "benefit",
+    "harm",
+    "uncertainty",
+    "reversibility",
+    "ethical_load",
+    "scope",
+    "rollout_value",
+    "memory_support",
+    "memory_confidence",
+    "memory_contradiction",
+    "critic_mean",
+    "critic_disagreement",
+    "critic_min",
+    "integration_score",
+    "decision_code",
+    "critic::safety",
+    "critic::care",
+    "critic::autonomy",
+    "critic::epistemic",
+    "critic::long_horizon",
+    "critic::coherence",
+    "critic::integrity"
+  ]
+}

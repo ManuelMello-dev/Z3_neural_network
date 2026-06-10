@@ -25,6 +25,7 @@ from z3_language_training import train_z3_on_language_window
 from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
 from response_adapter import build_z3_expression
+from conscience import ConsciencePipeline
 from runtime_loop import AutonomousRuntimeLoop, RuntimeLoopConfig
 from state_store import StateStore
 from world_model import OnlineWorldModel
@@ -49,6 +50,7 @@ app = FastAPI(
 _MODEL = None
 _WORLD_MODEL = OnlineWorldModel(feature_dim=64, latent_dim=8)
 _MEMORY = ResonantMemoryGeometry(max_rings=256, resonance_horizon=72)
+_CONSCIENCE = ConsciencePipeline()
 _LANGUAGE_STREAM = LanguageStream()
 _CURRICULUM_STREAM = CurriculumStream()
 _INFRA = InfrastructureHub()
@@ -147,6 +149,25 @@ class ChatRequest(BaseModel):
     learning_rate: float = Field(1e-3, gt=0.0, le=1.0, description="Learning rate when train=true.")
 
 
+class ConscienceEvaluateRequest(BaseModel):
+    """Request payload for direct production conscience evaluation."""
+
+    proposal: Dict[str, Any] | str = Field(..., description="Structured proposal or text/action to evaluate.")
+    context: Dict[str, Any] = Field(default_factory=dict, description="Optional world-model, memory, Z³, stakeholder, and constraint context.")
+    persist: bool = Field(False, description="Save runtime state after evaluation.")
+
+
+class ConscienceOutcomeRequest(BaseModel):
+    """Outcome feedback for conscience memory calibration."""
+
+    outcome_value: float = Field(..., ge=-1.0, le=1.0, description="Observed outcome valence for the last conscience result.")
+    salience: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional outcome salience override.")
+    confidence: Optional[float] = Field(None, ge=0.0, le=1.0, description="Optional outcome confidence override.")
+    provenance: Dict[str, Any] = Field(default_factory=dict, description="Who/what observed or labeled this outcome.")
+    notes: str = Field("", description="Auditable notes about the outcome.")
+    persist: bool = Field(True, description="Save runtime state after learning the outcome.")
+
+
 def _render_interface() -> str:
     interface_path = os.path.join(os.path.dirname(__file__), "interface.html")
     with open(interface_path, "r", encoding="utf-8") as handle:
@@ -170,6 +191,7 @@ def _status_payload() -> Dict[str, Any]:
         "curriculum": "/curriculum",
         "chat": "/chat",
         "infra": "/infra",
+        "conscience": "/conscience",
     }
 
 
@@ -186,7 +208,7 @@ def ensure_runtime_loaded() -> Any:
         if _MODEL is None:
             _MODEL = Z3NeuralDynamics()
         if not _STATE_LOADED:
-            loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR)
+            loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR, conscience=_CONSCIENCE)
             _MODEL = loaded.get("model") or _MODEL
             _STATE_LOADED = True
         return _MODEL
@@ -263,7 +285,7 @@ def _reset_corrupted_neural_runtime(reason: str) -> Dict[str, Any]:
         _MODEL = Z3NeuralDynamics()
         _OPTIMIZER = None
         _STATE_LOADED = True
-        manifest = _STATE_STORE.save_all(model=_MODEL, world_model=_WORLD_MODEL, memory=_MEMORY)
+        manifest = _STATE_STORE.save_all(model=_MODEL, world_model=_WORLD_MODEL, memory=_MEMORY, conscience=_CONSCIENCE)
     return {"reset": True, "reason": reason, "state_manifest": manifest}
 
 
@@ -291,16 +313,55 @@ def _compose_z3_input(world_output: Dict[str, Any], memory_output: Dict[str, Any
     return features[:expected_dim]
 
 
+def _conscience_context(
+    *,
+    domain: str,
+    world_output: Optional[Dict[str, Any]] = None,
+    memory_output: Optional[Dict[str, Any]] = None,
+    z3_metrics: Optional[Dict[str, Any]] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    context = {
+        "domain": domain,
+        "world_model": world_output or {},
+        "memory": memory_output or {},
+        "z3_metrics": z3_metrics or {},
+        "source": "z3_runtime_membrane",
+    }
+    if extra:
+        context.update(extra)
+    return context
+
+
+def _evaluate_conscience(
+    proposal: Dict[str, Any] | str,
+    *,
+    domain: str,
+    world_output: Optional[Dict[str, Any]] = None,
+    memory_output: Optional[Dict[str, Any]] = None,
+    z3_metrics: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    merged_context = _conscience_context(
+        domain=domain,
+        world_output=world_output,
+        memory_output=memory_output,
+        z3_metrics=z3_metrics,
+        extra=context,
+    )
+    return _CONSCIENCE.evaluate(proposal, context=merged_context).to_dict()
+
+
 def _persist_if_requested(persist: bool) -> Optional[Dict[str, Any]]:
     if not persist:
         return None
     model = get_model()
-    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR)
+    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR, conscience=_CONSCIENCE)
 
 
 def _runtime_save() -> Dict[str, Any]:
     model = get_model()
-    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR)
+    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR, conscience=_CONSCIENCE)
 
 
 def _language_ingestor_config(*, batch_size: Optional[int] = None, learning_rate: Optional[float] = None) -> Z3CorpusIngestionConfig:
@@ -483,7 +544,16 @@ def _runtime_tick() -> Dict[str, Any]:
             "regime": "autonomous_runtime",
         },
     )
-    z3_vector = _compose_z3_input(world_output.to_dict(), memory_output, model.config.input_dim)
+    world_dict = world_output.to_dict()
+    conscience_result = _evaluate_conscience(
+        observation,
+        domain="runtime",
+        world_output=world_dict,
+        memory_output=memory_output,
+        z3_metrics=prior_metrics,
+        context={"kind": "autonomous_runtime_tick"},
+    )
+    z3_vector = _compose_z3_input(world_dict, memory_output, model.config.input_dim)
     x = _tensor_from_vector(z3_vector, model.config.input_dim)
     optimizer = _get_optimizer(model, float(os.environ.get("Z3_RUNTIME_LR", "0.001")))
     try:
@@ -515,8 +585,9 @@ def _runtime_tick() -> Dict[str, Any]:
     return {
         "observation": observation,
         "input_vector": z3_vector,
-        "world_model": world_output.to_dict(),
+        "world_model": world_dict,
         "memory": memory_output,
+        "conscience": conscience_result,
         "z3": {
             "metrics": train_metrics,
             "projection": model.public_projection(projection_output),
@@ -610,6 +681,7 @@ def config() -> Dict[str, Any]:
         "metric_names": list(model.metric_names()),
         "world_model": _WORLD_MODEL.get_state(),
         "memory": _MEMORY.get_snapshot(recent_ring_count=3)["metrics"],
+        "conscience": _CONSCIENCE.get_state(),
         "curriculum": _CURRICULUM_STREAM.status(),
     }
 
@@ -797,10 +869,27 @@ def integrated_observe(request: IntegratedObserveRequest) -> Dict[str, Any]:
         sigma_hint=sigma_hint,
         constitutional_context=constitutional_context,
     )
-    z3_vector = _compose_z3_input(world_output.to_dict(), memory_output, model.config.input_dim)
+    world_dict = world_output.to_dict()
+    prior_z3_metrics = model.metrics_to_dict(model.last_metrics)
+    conscience_result = _evaluate_conscience(
+        request.observation,
+        domain=request.domain,
+        world_output=world_dict,
+        memory_output=memory_output,
+        z3_metrics=prior_z3_metrics,
+        context={"kind": "integrated_observe"},
+    )
+    z3_vector = _compose_z3_input(world_dict, memory_output, model.config.input_dim)
     x = _tensor_from_vector(z3_vector, model.config.input_dim)
 
-    if request.train:
+    if conscience_result.get("decision") == "reject":
+        z3_response = {
+            "blocked_by_conscience": True,
+            "metrics": prior_z3_metrics,
+            "projection": None,
+            "reason": conscience_result.get("rationale"),
+        }
+    elif request.train:
         optimizer = _get_optimizer(model, request.learning_rate)
         z3_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
         z3_response: Dict[str, Any] = {"metrics": z3_metrics, "projection": model.public_projection(model.step_runtime(x, hard_gate=False))}
@@ -811,18 +900,64 @@ def integrated_observe(request: IntegratedObserveRequest) -> Dict[str, Any]:
 
     response = {
         "input_vector": z3_vector,
-        "world_model": world_output.to_dict(),
+        "world_model": world_dict,
         "memory": memory_output,
+        "conscience": conscience_result,
         "z3": z3_response,
     }
     response["infra"] = _INFRA.record_observation(
         observation=request.observation,
         domain=request.domain,
         vector=z3_vector,
-        world_model=world_output.to_dict(),
+        world_model=world_dict,
         memory=memory_output,
         z3_metrics=z3_response.get("metrics", {}),
     )
+    manifest = _persist_if_requested(request.persist)
+    if manifest:
+        response["state_manifest"] = manifest
+    return response
+
+
+@app.get("/conscience")
+def conscience_state() -> Dict[str, Any]:
+    """Return production conscience policy identity, memory status, and last decision."""
+    get_model()
+    return _CONSCIENCE.get_state()
+
+
+@app.get("/conscience/policy")
+def conscience_policy() -> Dict[str, Any]:
+    """Return the active externalized conscience policy for auditability."""
+    get_model()
+    return _CONSCIENCE.policy.to_dict()
+
+
+@app.post("/conscience/evaluate")
+def conscience_evaluate(request: ConscienceEvaluateRequest) -> Dict[str, Any]:
+    """Evaluate a proposal through the production conscience membrane."""
+    get_model()
+    result = _CONSCIENCE.evaluate(request.proposal, context=request.context).to_dict()
+    manifest = _persist_if_requested(request.persist)
+    if manifest:
+        result["state_manifest"] = manifest
+    return result
+
+
+@app.post("/conscience/outcome")
+def conscience_outcome(request: ConscienceOutcomeRequest) -> Dict[str, Any]:
+    """Record observed outcome feedback for the last conscience decision."""
+    if _CONSCIENCE.last_result is None:
+        raise HTTPException(status_code=409, detail="No conscience decision is available to calibrate.")
+    trace = _CONSCIENCE.learn_from_outcome(
+        _CONSCIENCE.last_result,
+        outcome_value=request.outcome_value,
+        salience=request.salience,
+        confidence=request.confidence,
+        provenance=request.provenance,
+        notes=request.notes,
+    )
+    response: Dict[str, Any] = {"trace": trace.to_dict(), "conscience": _CONSCIENCE.get_state()}
     manifest = _persist_if_requested(request.persist)
     if manifest:
         response["state_manifest"] = manifest
@@ -843,6 +978,7 @@ def infra_sync() -> Dict[str, Any]:
         "state": _STATE_STORE.manifest(),
         "world_model": _WORLD_MODEL.get_state(),
         "memory": _MEMORY.get_snapshot(recent_ring_count=5).get("metrics", {}),
+        "conscience": _CONSCIENCE.get_state(),
         "language": _LANGUAGE_STREAM.status(),
         "language_ingestor": _LANGUAGE_INGESTOR.snapshot() if _LANGUAGE_INGESTOR is not None else None,
         "curriculum": _CURRICULUM_STREAM.status(),
@@ -858,14 +994,14 @@ def state_manifest() -> Dict[str, Any]:
 @app.post("/state/save")
 def state_save() -> Dict[str, Any]:
     model = get_model()
-    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR)
+    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR, conscience=_CONSCIENCE)
 
 
 @app.post("/state/load")
 def state_load() -> Dict[str, Any]:
     global _MODEL, _STATE_LOADED
     _require_torch()
-    loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR)
+    loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR, conscience=_CONSCIENCE)
     _MODEL = loaded.pop("model")
     _STATE_LOADED = True
     return loaded

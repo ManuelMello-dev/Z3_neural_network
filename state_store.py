@@ -29,6 +29,7 @@ class StateStore:
         self.neural_path = self.state_dir / "z3_neural_dynamics.pt"
         self.world_model_path = self.state_dir / "world_model.json"
         self.memory_path = self.state_dir / "resonant_memory.json"
+        self.conscience_path = self.state_dir / "conscience.json"
         self.corpus_ingestor_path = self.state_dir / "z3_corpus_ingestor.pt"
         self.manifest_path = self.state_dir / "manifest.json"
 
@@ -37,6 +38,7 @@ class StateStore:
             "neural_checkpoint": self.neural_path,
             "world_model": self.world_model_path,
             "resonant_memory": self.memory_path,
+            "conscience": self.conscience_path,
             "corpus_ingestor": self.corpus_ingestor_path,
             "manifest": self.manifest_path,
         }
@@ -53,11 +55,13 @@ class StateStore:
             },
         }
 
-    def save_all(self, *, model: Any, world_model: Any, memory: Any, corpus_ingestor: Optional[Any] = None) -> Dict[str, Any]:
+    def save_all(self, *, model: Any, world_model: Any, memory: Any, corpus_ingestor: Optional[Any] = None, conscience: Optional[Any] = None) -> Dict[str, Any]:
         saved_at = time.time()
         model.save_checkpoint(self.neural_path)
         self._write_json(self.world_model_path, world_model.save_state())
         self._write_json(self.memory_path, memory.export_state())
+        if conscience is not None:
+            self._write_json(self.conscience_path, conscience.export_state())
         if corpus_ingestor is not None:
             self._bind_corpus_ingestor_path(corpus_ingestor)
             corpus_ingestor.save_checkpoint()
@@ -73,6 +77,7 @@ class StateStore:
         world_model: Any,
         memory: Any,
         corpus_ingestor: Optional[Any] = None,
+        conscience: Optional[Any] = None,
     ) -> Dict[str, Any]:
         loaded: Dict[str, Any] = {"loaded_at": time.time(), "loaded": {}}
         if self.neural_path.exists():
@@ -95,6 +100,13 @@ class StateStore:
             loaded["loaded"]["resonant_memory"] = True
         else:
             loaded["loaded"]["resonant_memory"] = False
+
+        conscience_state = self._read_json(self.conscience_path)
+        if conscience is not None and conscience_state:
+            conscience.load_state(conscience_state)
+            loaded["loaded"]["conscience"] = True
+        else:
+            loaded["loaded"]["conscience"] = False
 
         if corpus_ingestor is not None:
             self._bind_corpus_ingestor_path(corpus_ingestor)
