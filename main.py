@@ -7,6 +7,7 @@ persistence across Railway restarts when a volume is attached.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -43,10 +44,36 @@ else:
     IMPORT_ERROR = None
 
 
+@contextlib.asynccontextmanager
+async def _lifespan(app_: Any):
+    """FastAPI lifespan: start audio synth on boot, save + stop on shutdown."""
+    # --- startup ---
+    try:
+        agent_count = 8
+        if _MODEL is not None:
+            agent_count = getattr(getattr(_MODEL, "config", None), "agent_count", 8)
+        synth = get_synthesizer(agent_count)
+        synth.ws_manager = get_ws_manager()
+        synth.load_weights()
+        synth.start()
+        print(f"[Z³ Audio] Synthesizer started with {agent_count} agents.")
+    except Exception as exc:
+        print(f"[Z³ Audio] Synthesizer startup skipped: {exc}")
+    yield
+    # --- shutdown ---
+    try:
+        synth = get_synthesizer()
+        synth.stop()
+        synth.save_weights()
+    except Exception as exc:
+        print(f"[Z³ Audio] Shutdown save skipped: {exc}")
+
+
 app = FastAPI(
     title="Z³ Neural Network Runtime",
     description="Runtime membrane for the standalone Z³ / Z-prime neural dynamics core.",
     version="0.2.0",
+    lifespan=_lifespan,
 )
 
 _MODEL = None
@@ -267,15 +294,25 @@ def _tensor_is_finite(value: Any) -> bool:
 
 
 def _model_state_is_finite(model: Any) -> bool:
+    """Check model parameter/buffer finiteness under the RUNTIME_LOCK.
+
+    The autonomous loop runs train_step on a background thread while the
+    asyncio event loop may simultaneously call _ensure_finite_neural_runtime
+    from a different context. Iterating model.parameters() / model.buffers()
+    while another thread is mutating them via optimizer.step() causes the
+    'free(): corrupted unsorted chunks' / segfault seen in production.
+    Acquiring _RUNTIME_LOCK before the scan serialises access.
+    """
     if torch is None:
         return False
-    with torch.no_grad():
-        for parameter in model.parameters():
-            if not _tensor_is_finite(parameter):
-                return False
-        for buffer in model.buffers():
-            if buffer.numel() > 0 and not _tensor_is_finite(buffer):
-                return False
+    with _RUNTIME_LOCK:
+        with torch.no_grad():
+            for parameter in model.parameters():
+                if not _tensor_is_finite(parameter):
+                    return False
+            for buffer in model.buffers():
+                if buffer.numel() > 0 and not _tensor_is_finite(buffer):
+                    return False
     return True
 
 
@@ -559,9 +596,10 @@ def _runtime_tick() -> Dict[str, Any]:
     x = _tensor_from_vector(z3_vector, model.config.input_dim)
     optimizer = _get_optimizer(model, float(os.environ.get("Z3_RUNTIME_LR", "0.001")))
     try:
-        train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
-        with torch.no_grad():
-            projection_output = model.forward(x, hard_gate=False, update_state=False, add_noise=False)
+        with _RUNTIME_LOCK:
+            train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
+            with torch.no_grad():
+                projection_output = model.forward(x, hard_gate=False, update_state=False, add_noise=False)
     except Exception as exc:
         error_text = str(exc).lower()
         if "nan" not in error_text and "non-finite" not in error_text and "inf" not in error_text:
@@ -569,9 +607,10 @@ def _runtime_tick() -> Dict[str, Any]:
         reset_info = _reset_corrupted_neural_runtime(f"runtime_tick_recovered_from_{type(exc).__name__}")
         model = get_model()
         optimizer = _get_optimizer(model, float(os.environ.get("Z3_RUNTIME_LR", "0.001")))
-        train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
-        with torch.no_grad():
-            projection_output = model.forward(x, hard_gate=False, update_state=False, add_noise=False)
+        with _RUNTIME_LOCK:
+            train_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
+            with torch.no_grad():
+                projection_output = model.forward(x, hard_gate=False, update_state=False, add_noise=False)
         train_metrics["self_healing_reset"] = reset_info
 
     # Feed live phase state into the audio synthesizer (autonomous tick)
@@ -1054,31 +1093,9 @@ def runtime_tick() -> Dict[str, Any]:
     return runtime_status_payload()
 
 
-@app.on_event("startup")
-async def _startup_audio_synth() -> None:
-    """Start the Z³ audio synthesis background loop on service boot."""
-    try:
-        agent_count = 8
-        if _MODEL is not None:
-            agent_count = getattr(getattr(_MODEL, "config", None), "agent_count", 8)
-        synth = get_synthesizer(agent_count)
-        synth.ws_manager = get_ws_manager()
-        synth.load_weights()
-        synth.start()
-        print(f"[Z³ Audio] Synthesizer started with {agent_count} agents.")
-    except Exception as exc:
-        print(f"[Z³ Audio] Synthesizer startup skipped: {exc}")
-
-
-@app.on_event("shutdown")
-async def _shutdown_audio_synth() -> None:
-    """Auto-save synaptic memory matrix on service shutdown."""
-    try:
-        synth = get_synthesizer()
-        synth.stop()
-        synth.save_weights()
-    except Exception as exc:
-        print(f"[Z³ Audio] Shutdown save skipped: {exc}")
+# Startup/shutdown are now handled by the lifespan context manager above.
+# The on_event handlers have been removed to eliminate the DeprecationWarning
+# and to ensure a single, authoritative lifecycle path.
 
 
 @app.websocket("/ws/neural_stream")
