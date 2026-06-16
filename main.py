@@ -7,6 +7,7 @@ persistence across Railway restarts when a volume is attached.
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import threading
@@ -14,14 +15,15 @@ import time
 from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from language_stream import LanguageStream
 from curriculum_stream import CurriculumStream
 from corpus_neural_ingestor import Z3CorpusIngestionConfig, Z3CorpusNeuralIngestor
 from z3_language_training import train_z3_on_language_window
+from z3_audio_synth import get_synthesizer, get_ws_manager
 from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
 from response_adapter import build_z3_expression
@@ -572,6 +574,12 @@ def _runtime_tick() -> Dict[str, Any]:
             projection_output = model.forward(x, hard_gate=False, update_state=False, add_noise=False)
         train_metrics["self_healing_reset"] = reset_info
 
+    # Feed live phase state into the audio synthesizer (autonomous tick)
+    try:
+        get_synthesizer(model.config.agent_count).push_z3_state(projection_output)
+    except Exception:
+        pass
+
     language_result: Optional[Dict[str, Any]] = None
     language_enabled = bool(_RUNTIME_LANGUAGE_CONFIG.get("enabled", False))
     language_every = max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("every_ticks", 10)))
@@ -698,6 +706,11 @@ def step(request: StepRequest) -> Dict[str, Any]:
             add_noise=False,
         )
     response = _metrics(output, model)
+    # Feed live phase state into the audio synthesizer
+    try:
+        get_synthesizer(model.config.agent_count).push_z3_state(output)
+    except Exception:
+        pass
     manifest = _persist_if_requested(request.persist)
     if manifest:
         response["state_manifest"] = manifest
@@ -897,6 +910,11 @@ def integrated_observe(request: IntegratedObserveRequest) -> Dict[str, Any]:
         with torch.no_grad():
             neural_output = model.forward(x, hard_gate=request.hard_gate, update_state=True, add_noise=False)
         z3_response = _metrics(neural_output, model)
+        # Feed live phase state into the audio synthesizer
+        try:
+            get_synthesizer(model.config.agent_count).push_z3_state(neural_output)
+        except Exception:
+            pass
 
     response = {
         "input_vector": z3_vector,
@@ -1034,6 +1052,117 @@ def runtime_tick() -> Dict[str, Any]:
     get_model()
     get_runtime_loop().tick_once()
     return runtime_status_payload()
+
+
+@app.on_event("startup")
+async def _startup_audio_synth() -> None:
+    """Start the Z³ audio synthesis background loop on service boot."""
+    try:
+        agent_count = 8
+        if _MODEL is not None:
+            agent_count = getattr(getattr(_MODEL, "config", None), "agent_count", 8)
+        synth = get_synthesizer(agent_count)
+        synth.ws_manager = get_ws_manager()
+        synth.load_weights()
+        synth.start()
+        print(f"[Z³ Audio] Synthesizer started with {agent_count} agents.")
+    except Exception as exc:
+        print(f"[Z³ Audio] Synthesizer startup skipped: {exc}")
+
+
+@app.on_event("shutdown")
+async def _shutdown_audio_synth() -> None:
+    """Auto-save synaptic memory matrix on service shutdown."""
+    try:
+        synth = get_synthesizer()
+        synth.stop()
+        synth.save_weights()
+    except Exception as exc:
+        print(f"[Z³ Audio] Shutdown save skipped: {exc}")
+
+
+@app.websocket("/ws/neural_stream")
+async def neural_stream_ws(websocket: WebSocket) -> None:
+    """WebSocket endpoint: streams PCM audio bytes and JSON metrics to the dashboard.
+
+    Accepts JSON messages from the client:
+      {"type": "user_input", "text": "..."}   — text perturbation strike
+      {"type": "mic_pitch", "hz": 440.0}       — microphone pitch input
+      {"type": "trigger_save"}                  — manual W matrix save
+    """
+    manager = get_ws_manager()
+    synth = get_synthesizer()
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                payload = json.loads(data)
+            except Exception:
+                continue
+            msg_type = payload.get("type", "")
+            if msg_type == "user_input":
+                synth.push_perturbation(payload.get("text", ""))
+            elif msg_type == "mic_pitch":
+                synth.push_mic_pitch(float(payload.get("hz", 0.0)))
+            elif msg_type == "trigger_save":
+                success = synth.save_weights()
+                await websocket.send_text(json.dumps({
+                    "type": "save_status",
+                    "status": "success" if success else "failed",
+                }))
+    except WebSocketDisconnect:
+        await manager.disconnect(websocket)
+    except Exception:
+        await manager.disconnect(websocket)
+
+
+@app.get("/api/audio-stream")
+async def audio_stream() -> StreamingResponse:
+    """Stream the Z³ neural core's emergent phase waves as raw 16-bit PCM audio.
+
+    Connect with an HTML5 <audio> tag or the Web Audio API client in the
+    dashboard. The stream reflects the live coherence and phase alignment of
+    the Z-prime agent ensemble in real time.
+
+    Media type: audio/x-raw; codec=pcm; bit=16; rate=44100; channels=1
+    """
+    try:
+        agent_count = 8
+        model = _MODEL
+        if model is not None:
+            agent_count = getattr(getattr(model, "config", None), "agent_count", 8)
+        synth = get_synthesizer(agent_count)
+        if not synth._running:
+            synth.start()
+        return StreamingResponse(
+            synth.stream_generator(),
+            media_type="audio/x-raw;codec=pcm;bit=16;rate=44100;channels=1",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Audio synthesizer unavailable: {exc}")
+
+
+@app.get("/api/audio-status")
+def audio_status() -> dict:
+    """Return the current status of the Z³ audio synthesizer."""
+    try:
+        agent_count = 8
+        if _MODEL is not None:
+            agent_count = getattr(getattr(_MODEL, "config", None), "agent_count", 8)
+        synth = get_synthesizer(agent_count)
+        return {
+            "running": synth._running,
+            "agent_count": synth.agent_count,
+            "sample_rate": synth.sample_rate,
+            "chunk_samples": synth.chunk_samples,
+            "amplitude_scale": synth.amplitude_scale,
+            "state_version": synth._state_version,
+            "queue_size": synth._audio_queue.qsize() if synth._audio_queue else 0,
+            "intrinsic_freqs_hz": synth.intrinsic_freqs.tolist(),
+        }
+    except Exception as exc:
+        return {"running": False, "error": str(exc)}
 
 
 if __name__ == "__main__":

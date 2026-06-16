@@ -963,6 +963,11 @@
         Language Stream
         <span class="method-badge badge-post">POST</span>
       </div>
+      <div class="nav-item" data-panel="voice" onclick="showPanel('voice')">
+        <svg class="nav-icon" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="7" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M4 14c0-2.761 2.239-5 5-5s5 2.239 5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M9 13v3M7 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        Voice Engine
+        <span class="method-badge badge-get">WS</span>
+      </div>
     </div>
 
     <div class="nav-section">
@@ -1446,6 +1451,61 @@
             <textarea id="chat-message" placeholder="Transmit to Z³…" rows="2"></textarea>
             <button class="primary" onclick="runChat()" style="align-self:flex-end;white-space:nowrap">Send →</button>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         PANEL: Voice Engine
+    ═══════════════════════════════════════════════════ -->
+    <div class="panel" id="panel-voice">
+      <div class="panel-title">Voice Engine <span class="endpoint-tag">WS /ws/neural_stream</span></div>
+      <p class="panel-desc">Live additive FM synthesis driven by Z³’s real phase vectors and coherence amplitudes. Hebbian synaptic learning permanently restructures the W matrix as you interact. Type to strike the neural matrix. Hum into the mic to shift the fundamental pitch.</p>
+      <div class="card">
+        <div class="card-body">
+
+          <!-- Connection controls -->
+          <div class="form-row" style="margin-bottom:14px;align-items:center">
+            <button class="primary" id="voice-connect-btn" onclick="voiceConnect()">Connect Stream</button>
+            <button class="danger" id="voice-disconnect-btn" onclick="voiceDisconnect()" disabled>Disconnect</button>
+            <span id="voice-status" style="font-family:var(--font-mono);font-size:0.78rem;color:var(--text-dim);margin-left:8px">Offline</span>
+          </div>
+
+          <!-- Meta-learning velocity HUD -->
+          <div style="margin-bottom:12px;font-family:var(--font-mono);font-size:0.82rem">
+            <span style="color:var(--text-dim)">Brain Plasticity Velocity ΔW: </span>
+            <span id="voice-velocity" style="color:var(--plasma);font-weight:600">0.000000</span>
+          </div>
+
+          <!-- Synaptic matrix heatmap -->
+          <div style="margin-bottom:14px">
+            <div style="font-size:0.78rem;color:var(--text-dim);font-family:var(--font-mono);margin-bottom:6px">Z³ Synaptic Matrix W (Hebbian)</div>
+            <canvas id="matrixCanvas" width="320" height="320" style="background:#03050d;border:1px solid var(--border);border-radius:6px;display:block"></canvas>
+          </div>
+
+          <!-- Text perturbation strike -->
+          <div style="margin-bottom:12px">
+            <label style="font-size:0.78rem;color:var(--text-dim);display:block;margin-bottom:4px">Strike Neural Matrix (text → frequency perturbation)</label>
+            <div style="display:flex;gap:8px">
+              <input id="voice-strike-input" type="text" placeholder="Type to warp the phase field…"
+                style="flex:1;background:var(--surface2);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-family:var(--font-mono);font-size:0.85rem"
+                onkeydown="if(event.key==='Enter')voiceStrike()">
+              <button class="secondary" onclick="voiceStrike()">Strike</button>
+            </div>
+          </div>
+
+          <!-- Mic toggle -->
+          <div style="margin-bottom:12px">
+            <button class="secondary" id="voice-mic-btn" onclick="voiceMicToggle()">Enable Mic Adaptation</button>
+            <span id="voice-mic-status" style="font-family:var(--font-mono);font-size:0.78rem;color:var(--text-dim);margin-left:8px"></span>
+          </div>
+
+          <!-- Persistence -->
+          <div style="display:flex;align-items:center;gap:12px">
+            <button class="secondary" onclick="voiceSave()">Freeze Synaptic Memory (.npy)</button>
+            <span id="voice-save-status" style="font-family:var(--font-mono);font-size:0.78rem"></span>
+          </div>
+
         </div>
       </div>
     </div>
@@ -2133,6 +2193,153 @@ async function runChat() {
     const errMsg = (e.data && (e.data.detail || JSON.stringify(e.data))) || String(e);
     appendChatMsg('z3', `⚠ Error: ${errMsg}`);
   }
+}
+
+// ── Voice Engine ─────────────────────────────────────────────
+let _voiceWs = null;
+let _voiceAudioCtx = null;
+let _voiceStartTime = 0;
+let _micStream = null;
+let _micAnalyser = null;
+let _micInterval = null;
+
+const _matrixCanvas = document.getElementById('matrixCanvas');
+const _matrixCtx = _matrixCanvas ? _matrixCanvas.getContext('2d') : null;
+const _matrixNodes = 8; // matches Z³ agent_count default
+const _cellSize = _matrixCanvas ? _matrixCanvas.width / _matrixNodes : 40;
+
+function voiceConnect() {
+  if (_voiceWs && _voiceWs.readyState === WebSocket.OPEN) return;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  _voiceWs = new WebSocket(`${proto}://${location.host}/ws/neural_stream`);
+  _voiceWs.binaryType = 'arraybuffer';
+
+  _voiceAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+  _voiceStartTime = _voiceAudioCtx.currentTime;
+
+  $('voice-status').textContent = 'Connecting…';
+  $('voice-status').style.color = 'var(--warn)';
+
+  _voiceWs.onopen = () => {
+    $('voice-status').textContent = 'Streaming';
+    $('voice-status').style.color = 'var(--good)';
+    $('voice-connect-btn').disabled = true;
+    $('voice-disconnect-btn').disabled = false;
+  };
+
+  _voiceWs.onclose = () => {
+    $('voice-status').textContent = 'Offline';
+    $('voice-status').style.color = 'var(--text-dim)';
+    $('voice-connect-btn').disabled = false;
+    $('voice-disconnect-btn').disabled = true;
+  };
+
+  _voiceWs.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      // PCM audio chunk — decode and schedule
+      _voicePlayChunk(event.data);
+    } else {
+      try {
+        const payload = JSON.parse(event.data);
+        if (payload.type === 'metrics_update') {
+          $('voice-velocity').textContent = (payload.velocity || 0).toFixed(6);
+          if (payload.matrix) _voiceDrawMatrix(payload.matrix);
+        } else if (payload.type === 'save_status') {
+          const el = $('voice-save-status');
+          el.style.color = payload.status === 'success' ? 'var(--good)' : 'var(--bad)';
+          el.textContent = payload.status === 'success' ? 'Saved.' : 'Save failed.';
+          setTimeout(() => { el.textContent = ''; }, 3000);
+        }
+      } catch {}
+    }
+  };
+}
+
+function voiceDisconnect() {
+  if (_voiceWs) { _voiceWs.close(); _voiceWs = null; }
+  if (_voiceAudioCtx) { _voiceAudioCtx.close(); _voiceAudioCtx = null; }
+  voiceMicStop();
+}
+
+function _voicePlayChunk(buffer) {
+  if (!_voiceAudioCtx) return;
+  const int16 = new Int16Array(buffer);
+  const audioBuf = _voiceAudioCtx.createBuffer(1, int16.length, 44100);
+  const ch = audioBuf.getChannelData(0);
+  for (let i = 0; i < int16.length; i++) ch[i] = int16[i] / 32768.0;
+  const src = _voiceAudioCtx.createBufferSource();
+  src.buffer = audioBuf;
+  src.connect(_voiceAudioCtx.destination);
+  if (_voiceStartTime < _voiceAudioCtx.currentTime) _voiceStartTime = _voiceAudioCtx.currentTime;
+  src.start(_voiceStartTime);
+  _voiceStartTime += audioBuf.duration;
+}
+
+function _voiceDrawMatrix(matrix) {
+  if (!_matrixCtx) return;
+  const n = matrix.length;
+  const cell = _matrixCanvas.width / n;
+  _matrixCtx.clearRect(0, 0, _matrixCanvas.width, _matrixCanvas.height);
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      const w = matrix[r][c];
+      const alpha = Math.min(w / 1.5, 1.0);
+      const R = Math.floor(100 * (1 - alpha));
+      const G = Math.floor(255 * alpha);
+      const B = Math.floor(200 + 55 * alpha);
+      _matrixCtx.fillStyle = `rgba(${R},${G},${B},${alpha})`;
+      _matrixCtx.fillRect(c * cell + 1, r * cell + 1, cell - 2, cell - 2);
+    }
+  }
+}
+
+function voiceStrike() {
+  const text = $('voice-strike-input').value.trim();
+  if (!text || !_voiceWs || _voiceWs.readyState !== WebSocket.OPEN) return;
+  _voiceWs.send(JSON.stringify({ type: 'user_input', text }));
+  $('voice-strike-input').value = '';
+}
+
+function voiceSave() {
+  if (!_voiceWs || _voiceWs.readyState !== WebSocket.OPEN) return;
+  _voiceWs.send(JSON.stringify({ type: 'trigger_save' }));
+}
+
+async function voiceMicToggle() {
+  if (_micInterval) { voiceMicStop(); return; }
+  try {
+    _micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const ctx = new AudioContext();
+    const src = ctx.createMediaStreamSource(_micStream);
+    _micAnalyser = ctx.createAnalyser();
+    _micAnalyser.fftSize = 2048;
+    src.connect(_micAnalyser);
+    _micInterval = setInterval(() => {
+      if (!_voiceWs || _voiceWs.readyState !== WebSocket.OPEN) return;
+      const buf = new Float32Array(_micAnalyser.fftSize);
+      _micAnalyser.getFloatTimeDomainData(buf);
+      // Simple zero-crossing pitch estimate
+      let crossings = 0;
+      for (let i = 1; i < buf.length; i++) if (buf[i - 1] < 0 && buf[i] >= 0) crossings++;
+      const hz = (crossings * ctx.sampleRate) / buf.length;
+      if (hz > 40 && hz < 2000) {
+        _voiceWs.send(JSON.stringify({ type: 'mic_pitch', hz }));
+      }
+    }, 100);
+    $('voice-mic-btn').textContent = 'Disable Mic Adaptation';
+    $('voice-mic-status').textContent = 'Mic active';
+    $('voice-mic-status').style.color = 'var(--good)';
+  } catch (e) {
+    $('voice-mic-status').textContent = 'Mic access denied';
+    $('voice-mic-status').style.color = 'var(--bad)';
+  }
+}
+
+function voiceMicStop() {
+  if (_micInterval) { clearInterval(_micInterval); _micInterval = null; }
+  if (_micStream) { _micStream.getTracks().forEach(t => t.stop()); _micStream = null; }
+  $('voice-mic-btn').textContent = 'Enable Mic Adaptation';
+  $('voice-mic-status').textContent = '';
 }
 
 // Enter key to send chat
