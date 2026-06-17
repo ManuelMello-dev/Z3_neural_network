@@ -25,6 +25,10 @@ from curriculum_stream import CurriculumStream
 from corpus_neural_ingestor import Z3CorpusIngestionConfig, Z3CorpusNeuralIngestor
 from z3_language_training import train_z3_on_language_window
 from z3_audio_synth import get_synthesizer, get_ws_manager
+from z3_language_decoder import (
+    get_decoder, get_tokenizer, generate as z3_generate,
+    train_language_step, save_decoder, load_decoder,
+)
 from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
 from response_adapter import build_z3_expression
@@ -59,6 +63,19 @@ async def _lifespan(app_: Any):
         print(f"[Z³ Audio] Synthesizer started with {agent_count} agents.")
     except Exception as exc:
         print(f"[Z³ Audio] Synthesizer startup skipped: {exc}")
+    # Start decoder
+    try:
+        cfg = _MODEL.config if _MODEL is not None else None
+        dec = get_decoder(
+            input_dim=getattr(cfg, 'input_dim', 16),
+            evidence_dim=getattr(cfg, 'evidence_dim', 24),
+            state_dim=getattr(cfg, 'state_dim', 64),
+            context_dim=getattr(cfg, 'context_dim', 48),
+        )
+        load_decoder(dec)
+        print("[Z³ Decoder] Language decoder ready.")
+    except Exception as exc:
+        print(f"[Z³ Decoder] Startup skipped: {exc}")
     yield
     # --- shutdown ---
     try:
@@ -67,6 +84,10 @@ async def _lifespan(app_: Any):
         synth.save_weights()
     except Exception as exc:
         print(f"[Z³ Audio] Shutdown save skipped: {exc}")
+    try:
+        save_decoder(get_decoder())
+    except Exception as exc:
+        print(f"[Z³ Decoder] Shutdown save skipped: {exc}")
 
 
 app = FastAPI(
@@ -770,9 +791,33 @@ def train_step(request: TrainStepRequest) -> Dict[str, Any]:
     return response
 
 
+class GenerateRequest(BaseModel):
+    """Request payload for Z³ end-to-end language generation."""
+    prompt: str = Field("", description="Text prompt to condition Z³ on before generating.")
+    max_new_tokens: int = Field(120, ge=1, le=512, description="Maximum characters to generate.")
+    temperature: float = Field(0.85, ge=0.01, le=2.0, description="Sampling temperature.")
+    top_k: int = Field(40, ge=1, le=200, description="Top-k sampling cutoff.")
+    top_p: float = Field(0.92, ge=0.1, le=1.0, description="Nucleus sampling cutoff.")
+    repetition_penalty: float = Field(1.15, ge=1.0, le=3.0, description="Repetition penalty.")
+
+
+class TrainLanguageRequest(BaseModel):
+    """Request payload for one language decoder training step."""
+    text: str = Field(..., min_length=4, description="Text to train the language decoder on.")
+    learning_rate: float = Field(1e-3, gt=0.0, le=1.0, description="Learning rate.")
+    max_seq_len: int = Field(256, ge=8, le=1024, description="Maximum sequence length.")
+    persist: bool = Field(True, description="Save decoder weights after training.")
+
+
 @app.post("/chat")
 def chat(request: ChatRequest) -> Dict[str, Any]:
-    """Observe a chatbox message and express a state-grounded Z³ response."""
+    """Observe a chatbox message and express a state-grounded Z³ response.
+
+    If the language decoder has been trained, the response will be generated
+    end-to-end from Z³'s internal state. Otherwise falls back to the
+    deterministic response_adapter template.
+    """
+    model = get_model()
     observation = LanguageStream.text_to_observation(request.message, source="chatbox")
     language_training = _train_z3_on_language_observations([observation], learning_rate=request.learning_rate) if request.train else None
     integrated = IntegratedObserveRequest(
@@ -783,6 +828,32 @@ def chat(request: ChatRequest) -> Dict[str, Any]:
         learning_rate=request.learning_rate,
     )
     result = integrated_observe(integrated)
+
+    # Try end-to-end generation from Z³'s own language decoder
+    generated_response = None
+    decoder_used = False
+    try:
+        cfg = model.config
+        dec = get_decoder(
+            input_dim=cfg.input_dim,
+            evidence_dim=cfg.evidence_dim,
+            state_dim=cfg.state_dim,
+            context_dim=cfg.context_dim,
+        )
+        with _RUNTIME_LOCK:
+            generated_response = z3_generate(
+                model, dec,
+                prompt=request.message,
+                max_new_tokens=120,
+                temperature=0.85,
+                top_k=40,
+                top_p=0.92,
+            )
+        decoder_used = bool(generated_response and generated_response.strip())
+    except Exception:
+        pass
+
+    # Fallback to deterministic template if decoder not trained yet
     expression = build_z3_expression(
         message=request.message,
         observation=observation,
@@ -790,8 +861,12 @@ def chat(request: ChatRequest) -> Dict[str, Any]:
         language_training=language_training,
     )
     expression_payload = expression.to_dict()
+
+    response_text = generated_response.strip() if decoder_used else expression.response
+
     return {
-        "response": expression.response,
+        "response": response_text,
+        "response_source": "z3_language_decoder" if decoder_used else "response_adapter_template",
         "domain": "language:chat",
         "language_ingested": True,
         "language_training": language_training,
@@ -799,6 +874,80 @@ def chat(request: ChatRequest) -> Dict[str, Any]:
         "observation": observation,
         "result": result,
     }
+
+
+@app.post("/generate")
+def generate_text(request: GenerateRequest) -> Dict[str, Any]:
+    """Generate natural English text directly from Z³'s internal state.
+
+    This is the end-to-end language generation endpoint. Z³ uses its own
+    trained language decoder to produce text without any external LLM.
+    The quality improves as the decoder is trained on more corpus text.
+    """
+    model = get_model()
+    cfg = model.config
+    try:
+        dec = get_decoder(
+            input_dim=cfg.input_dim,
+            evidence_dim=cfg.evidence_dim,
+            state_dim=cfg.state_dim,
+            context_dim=cfg.context_dim,
+        )
+        with _RUNTIME_LOCK:
+            text = z3_generate(
+                model, dec,
+                prompt=request.prompt,
+                max_new_tokens=request.max_new_tokens,
+                temperature=request.temperature,
+                top_k=request.top_k,
+                top_p=request.top_p,
+                repetition_penalty=request.repetition_penalty,
+            )
+        return {
+            "generated": text,
+            "prompt": request.prompt,
+            "tokens": len(text),
+            "decoder": "z3_language_decoder",
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Language decoder unavailable: {exc}")
+
+
+@app.post("/train-language")
+def train_language(request: TrainLanguageRequest) -> Dict[str, Any]:
+    """Train Z³'s end-to-end language decoder on one text sample.
+
+    Each call runs one next-token prediction training step through both
+    Z³'s neural core and the language decoder head jointly. Call this
+    repeatedly with corpus text to teach Z³ to generate natural English.
+    """
+    model = get_model()
+    cfg = model.config
+    try:
+        dec = get_decoder(
+            input_dim=cfg.input_dim,
+            evidence_dim=cfg.evidence_dim,
+            state_dim=cfg.state_dim,
+            context_dim=cfg.context_dim,
+        )
+        optimizer = _get_optimizer(model, request.learning_rate)
+        # Add decoder parameters to the optimizer if not already present
+        dec_param_ids = {id(p) for p in dec.parameters()}
+        existing_ids = {id(p) for group in optimizer.param_groups for p in group['params']}
+        new_params = [p for p in dec.parameters() if id(p) not in existing_ids]
+        if new_params:
+            optimizer.add_param_group({'params': new_params, 'lr': request.learning_rate})
+        with _RUNTIME_LOCK:
+            metrics = train_language_step(
+                model, dec, optimizer,
+                request.text,
+                max_seq_len=request.max_seq_len,
+            )
+        if request.persist:
+            save_decoder(dec)
+        return {"language_decoder_training": metrics}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Language training failed: {exc}")
 
 
 @app.get("/language")
