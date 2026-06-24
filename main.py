@@ -29,6 +29,9 @@ from z3_language_decoder import (
     get_decoder, get_tokenizer, generate as z3_generate,
     train_language_step, save_decoder, load_decoder,
 )
+from z3_articulatory_synth import (
+    get_articulatory_voice, TrajectoryControlLayer,
+)
 from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
 from response_adapter import build_z3_expression
@@ -63,7 +66,7 @@ async def _lifespan(app_: Any):
         print(f"[Z³ Audio] Synthesizer started with {agent_count} agents.")
     except Exception as exc:
         print(f"[Z³ Audio] Synthesizer startup skipped: {exc}")
-    # Start decoder
+    # Start language decoder
     try:
         cfg = _MODEL.config if _MODEL is not None else None
         dec = get_decoder(
@@ -76,6 +79,17 @@ async def _lifespan(app_: Any):
         print("[Z³ Decoder] Language decoder ready.")
     except Exception as exc:
         print(f"[Z³ Decoder] Startup skipped: {exc}")
+    # Start articulatory voice
+    try:
+        cfg = _MODEL.config if _MODEL is not None else None
+        get_articulatory_voice(
+            z3_prediction_dim=getattr(cfg, 'evidence_dim', 24)
+                              + getattr(cfg, 'state_dim', 64)
+                              + getattr(cfg, 'context_dim', 48),
+        )
+        print("[Z³ Voice] Articulatory voice module ready.")
+    except Exception as exc:
+        print(f"[Z³ Voice] Startup skipped: {exc}")
     yield
     # --- shutdown ---
     try:
@@ -1103,6 +1117,29 @@ def integrated_observe(request: IntegratedObserveRequest) -> Dict[str, Any]:
             get_synthesizer(model.config.agent_count).push_z3_state(neural_output)
         except Exception:
             pass
+        # Push articulatory state broadcast over WebSocket
+        try:
+            cfg = model.config
+            voice = get_articulatory_voice(
+                z3_prediction_dim=cfg.evidence_dim + cfg.state_dim + cfg.context_dim
+            )
+            pred_input = torch.cat([
+                neural_output["integrated_evidence"],
+                neural_output["z3_after"],
+                neural_output["context"],
+            ], dim=-1)
+            mem_ctx = TrajectoryControlLayer.encode_memory_context(
+                response.get("memory", {}),
+                device=pred_input.device,
+            )
+            broadcast = voice.articulatory_state_broadcast(pred_input, mem_ctx)
+            ws_mgr = get_ws_manager()
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(ws_mgr.send_json(broadcast))
+        except Exception:
+            pass
 
     response = {
         "input_vector": z3_vector,
@@ -1307,6 +1344,38 @@ async def audio_stream() -> StreamingResponse:
         )
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Audio synthesizer unavailable: {exc}")
+
+
+@app.get("/api/articulatory-state")
+def articulatory_state_endpoint() -> dict:
+    """Return the current vocal tract geometry from Z³'s live state.
+
+    Shows the 16 articulatory parameters (F0, formants, nasality, etc.)
+    and the 4-step coarticulatory trajectory predicted by the
+    TrajectoryControlLayer conditioned on the resonant memory rings.
+    """
+    try:
+        model = get_model()
+        cfg = model.config
+        voice = get_articulatory_voice(
+            z3_prediction_dim=cfg.evidence_dim + cfg.state_dim + cfg.context_dim
+        )
+        with _RUNTIME_LOCK:
+            with torch.no_grad():
+                x = torch.zeros(1, cfg.input_dim)
+                out = model.forward(x, update_state=False, add_noise=False)
+            pred_input = torch.cat([
+                out["integrated_evidence"],
+                out["z3_after"],
+                out["context"],
+            ], dim=-1)
+        mem_ctx = TrajectoryControlLayer.encode_memory_context(
+            _MEMORY.get_snapshot() if hasattr(_MEMORY, 'get_snapshot') else {},
+        )
+        broadcast = voice.articulatory_state_broadcast(pred_input, mem_ctx)
+        return broadcast
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Articulatory state unavailable: {exc}")
 
 
 @app.get("/api/audio-status")
