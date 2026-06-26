@@ -32,6 +32,7 @@ from z3_language_decoder import (
 from z3_articulatory_synth import (
     get_articulatory_voice, TrajectoryControlLayer,
 )
+from z3_acoustic_encoder import get_acoustic_encoder
 from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
 from response_adapter import build_z3_expression
@@ -1308,6 +1309,48 @@ async def neural_stream_ws(websocket: WebSocket) -> None:
                 synth.push_perturbation(payload.get("text", ""))
             elif msg_type == "mic_pitch":
                 synth.push_mic_pitch(float(payload.get("hz", 0.0)))
+            elif msg_type == "mic_audio":
+                try:
+                    # Expecting base64 encoded raw 16-bit PCM bytes (100ms window)
+                    import base64
+                    import numpy as np
+                    audio_bytes = base64.b64decode(payload.get("audio", ""))
+                    if audio_bytes:
+                        waveform = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32767.0
+                        waveform_tensor = torch.from_numpy(waveform).unsqueeze(0).to(_MODEL.device)
+                        
+                        # Encode audio to Z³ input vector
+                        encoder = get_acoustic_encoder(input_dim=_MODEL.config.input_dim)
+                        z3_input = encoder(waveform_tensor)
+                        
+                        # Feed into Z³ for entrainment
+                        with _RUNTIME_LOCK:
+                            neural_output = _MODEL.forward(z3_input, update_state=True, add_noise=False)
+                        
+                        # Update audio synth and articulatory voice
+                        get_synthesizer().push_z3_state(neural_output)
+                        
+                        # Push articulatory state broadcast over WebSocket
+                        cfg = _MODEL.config
+                        voice = get_articulatory_voice(
+                            z3_prediction_dim=cfg.evidence_dim + cfg.state_dim + cfg.context_dim
+                        )
+                        pred_input = torch.cat([
+                            neural_output["integrated_evidence"],
+                            neural_output["z3_after"],
+                            neural_output["context"],
+                        ], dim=-1)
+                        
+                        # Memory context from recent observe
+                        mem_ctx = TrajectoryControlLayer.encode_memory_context(
+                            _MEMORY.get_snapshot().get("metrics", {}),
+                            device=pred_input.device,
+                        )
+                        
+                        broadcast = voice.articulatory_state_broadcast(pred_input, mem_ctx)
+                        await manager.send_json(broadcast)
+                except Exception as exc:
+                    print(f"[Z³ Entrainment] Error: {exc}")
             elif msg_type == "trigger_save":
                 success = synth.save_weights()
                 await websocket.send_text(json.dumps({
