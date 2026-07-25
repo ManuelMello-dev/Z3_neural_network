@@ -18,6 +18,7 @@ model or using training helpers requires PyTorch.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from dataclasses import asdict, dataclass
 
@@ -58,6 +59,7 @@ class Z3Config:
     hidden_dim: int = 128
     agent_count: int = 8
     agent_embed_dim: int = 12
+    agent_memory_dim: int = 32
 
     step_size: float = 0.15
     alpha_update: float = 0.05
@@ -119,6 +121,8 @@ class Z3Config:
     beta_boot_context: float = 0.05
     beta_boot_variance: float = 0.05
     beta_gate_rate: float = 0.03
+    lateral_exchange_strength: float = 0.20
+    beta_local_prediction: float = 0.15
 
     @classmethod
     def predictive_runtime(cls, **overrides: Any) -> "Z3Config":
@@ -209,7 +213,18 @@ if torch is not None:
             expected_in = cfg.state_dim + cfg.context_dim + cfg.agent_embed_dim
             self.expected_evidence = MLP(expected_in, cfg.evidence_dim, cfg.hidden_dim)
 
-            proposal_in = cfg.evidence_dim + cfg.state_dim + cfg.context_dim
+            # Local memory transition (Forward recursion)
+            memory_in = cfg.agent_memory_dim + cfg.local_dim + cfg.context_dim + cfg.agent_embed_dim
+            self.agent_memory_transition = MLP(memory_in, cfg.agent_memory_dim, cfg.hidden_dim, final_tanh=True)
+            
+            # Local expected evidence (Backward pass / self-evaluation)
+            local_expected_in = cfg.agent_memory_dim + cfg.local_dim + cfg.context_dim + cfg.agent_embed_dim
+            self.local_expected_evidence = MLP(local_expected_in, cfg.evidence_dim, cfg.hidden_dim)
+            
+            # Agent lateral attention (to exchange evidence)
+            self.lateral_attention = MLP(cfg.evidence_dim + cfg.agent_embed_dim, cfg.evidence_dim, cfg.hidden_dim)
+
+            proposal_in = cfg.evidence_dim + cfg.state_dim + cfg.context_dim + cfg.agent_memory_dim
             self.gamma = MLP(proposal_in, cfg.state_dim, cfg.hidden_dim, final_tanh=True)
 
             self.prediction_head = MLP(cfg.evidence_dim + cfg.state_dim + cfg.context_dim, cfg.input_dim, cfg.hidden_dim)
@@ -220,6 +235,7 @@ if torch is not None:
 
             self.register_buffer("z3_state", torch.zeros(cfg.state_dim))
             self.register_buffer("zprime_state", torch.empty(0))
+            self.register_buffer("agent_memory_state", torch.empty(0))
             self.register_buffer("last_metrics", torch.zeros(self.metric_count()))
             self.register_buffer("rare_expert_credit", torch.zeros(cfg.agent_count))
             self.reset_state()
@@ -248,6 +264,7 @@ if torch is not None:
                 states = target.unsqueeze(0).repeat(cfg.agent_count, 1)
                 states = states + torch.randn_like(states) * cfg.noise_scale
                 self.zprime_state = states.detach()
+                self.agent_memory_state = torch.zeros(cfg.agent_count, cfg.agent_memory_dim, device=device)
 
         def forward(
             self,
@@ -255,6 +272,7 @@ if torch is not None:
             *,
             initial_z3: Optional[torch.Tensor] = None,
             initial_agents: Optional[torch.Tensor] = None,
+            initial_agent_memory: Optional[torch.Tensor] = None,
             target: Optional[torch.Tensor] = None,
             hard_gate: bool = False,
             update_state: bool = False,
@@ -270,6 +288,7 @@ if torch is not None:
             context = self.context_encoder(x)
             z3 = self._prepare_z3(batch, device, initial_z3)
             agents = self._prepare_agents(batch, device, initial_agents)
+            agent_memory = self._prepare_agent_memory(batch, device, initial_agent_memory)
             agent_ids = torch.arange(cfg.agent_count, device=device)
             agent_embed = self.agent_embeddings(agent_ids).unsqueeze(0).expand(batch, -1, -1)
 
@@ -309,11 +328,28 @@ if torch is not None:
             if add_noise and cfg.noise_scale > 0.0:
                 update_vector = update_vector + torch.randn_like(update_vector) * (cfg.noise_scale * (cfg.step_size ** 0.5))
             z_next = agents + cfg.step_size * update_vector
+            
+            # Forward recursion: update local memory
+            memory_input = torch.cat([agent_memory, agents, context_agents, agent_embed], dim=-1)
+            agent_memory_next = agent_memory + cfg.step_size * self.agent_memory_transition(memory_input)
 
             evidence_input = torch.cat([z_next, context_agents, agent_embed], dim=-1)
-            evidence = self.evidence_projection(evidence_input)
+            raw_evidence = self.evidence_projection(evidence_input)
+            
+            # Lateral recursion: agents exchange evidence
+            lateral_keys = self.lateral_attention(torch.cat([raw_evidence, agent_embed], dim=-1))
+            sim = torch.matmul(lateral_keys, lateral_keys.transpose(1, 2)) / math.sqrt(cfg.evidence_dim)
+            lateral_weights = F.softmax(sim, dim=-1)
+            lateral_evidence = torch.matmul(lateral_weights, raw_evidence)
+            evidence = (1.0 - cfg.lateral_exchange_strength) * raw_evidence + cfg.lateral_exchange_strength * lateral_evidence
+
             expected_input = torch.cat([z3_context, context_agents, agent_embed], dim=-1)
             expected = self.expected_evidence(expected_input)
+            
+            # Backward recursion: local prediction error (self-evaluation)
+            local_expected_input = torch.cat([agent_memory_next, z_next, context_agents, agent_embed], dim=-1)
+            local_expected = self.local_expected_evidence(local_expected_input)
+            local_prediction_error = torch.norm(evidence - local_expected, dim=-1)
 
             novelty = torch.norm(evidence - expected, dim=-1)
             distance = torch.norm(z_next - target_agents, dim=-1)
@@ -329,12 +365,15 @@ if torch is not None:
             phi_gain = self.phi.view(1, cfg.agent_count).clamp_min(cfg.phi_floor)
             coherence_gain = coherence.clamp_min(cfg.coherence_floor)
             exploratory_gate = (gate + cfg.novelty_exploration_floor * novelty_gate).clamp_max(1.0)
-            trust = exploratory_gate * phi_gain * coherence_gain
+            
+            # Adjudication: agents self-weight based on local prediction error
+            local_confidence = torch.exp(-local_prediction_error)
+            trust = exploratory_gate * phi_gain * coherence_gain * local_confidence
             if cfg.rare_expert_trust_bonus > 0.0:
                 trust = trust + cfg.rare_expert_trust_bonus * credit_norm * coherence_gain
             weights = self.normalize_trust(trust)
 
-            proposal_input = torch.cat([evidence, z3_context, context_agents], dim=-1)
+            proposal_input = torch.cat([evidence, z3_context, context_agents, agent_memory_next], dim=-1)
             proposals = self.gamma(proposal_input)
             integrated_delta = torch.sum(proposals * weights.unsqueeze(-1), dim=1)
             novelty_pressure = torch.tanh(((novelty - theta_novelty) / tau_novelty).clamp_min(0.0)).unsqueeze(-1)
@@ -358,11 +397,12 @@ if torch is not None:
             losses = self.compute_losses(
                 prediction=prediction,
                 target=target_x,
+                evidence=evidence,
+                local_expected=local_expected,
                 z3=z3,
                 z3_next=z3_next,
                 agents=agents,
                 z_next=z_next,
-                evidence=evidence,
                 coherence=coherence,
                 novelty=novelty,
                 gate=gate,
@@ -406,13 +446,15 @@ if torch is not None:
             losses["exploratory_gate"] = exploratory_gate.mean().detach()
             agent_utility = (exploratory_gate * coherence_gain * novelty).detach()
             if update_state:
-                self._commit_state(z3_next, z_next, metrics, agent_utility)
+                self._commit_state(z3_next, z_next, agent_memory_next, metrics, agent_utility)
 
             return {
                 "z3_before": z3,
                 "z3_after": z3_next,
                 "agents_before": agents,
                 "agents_after": z_next,
+                "agent_memory_before": agent_memory,
+                "agent_memory_after": agent_memory_next,
                 "context": context,
                 "boot_target": boot_target,
                 "boot_target_z3_only": boot_target_z3_only,
@@ -451,11 +493,12 @@ if torch is not None:
             *,
             prediction: torch.Tensor,
             target: torch.Tensor,
+            evidence: torch.Tensor,
+            local_expected: torch.Tensor,
             z3: torch.Tensor,
             z3_next: torch.Tensor,
             agents: torch.Tensor,
             z_next: torch.Tensor,
-            evidence: torch.Tensor,
             coherence: torch.Tensor,
             novelty: torch.Tensor,
             gate: torch.Tensor,
@@ -521,8 +564,10 @@ if torch is not None:
                 + F.relu(gate_rate - torch.tensor(cfg.gate_rate_max, device=gate_soft.device, dtype=gate_soft.dtype)).pow(2)
             )
             threshold_variance = theta_novelty_eff.var(unbiased=False) + theta_coherence_eff.var(unbiased=False)
+            local_predictive = F.mse_loss(local_expected, evidence.detach())
             total = (
                 cfg.beta_predictive * predictive
+                + cfg.beta_local_prediction * local_predictive
                 + cfg.beta_coherence_band * coherence_band
                 + cfg.beta_diversity * diversity
                 + cfg.beta_evidence_variance * evidence_variance
@@ -537,6 +582,7 @@ if torch is not None:
             return {
                 "total": total,
                 "predictive": predictive,
+                "local_predictive": local_predictive,
                 "coherence_band": coherence_band,
                 "diversity": diversity,
                 "evidence_variance": evidence_variance,
@@ -630,6 +676,7 @@ if torch is not None:
             device = sequence.device
             z3 = self._prepare_z3(batch, device, None).detach()
             agents = self._prepare_agents(batch, device, None).detach()
+            agent_memory = self._prepare_agent_memory(batch, device, None).detach()
             chunk_metrics = []
             chunk_losses = []
             final_output: Optional[Dict[str, torch.Tensor]] = None
@@ -644,6 +691,7 @@ if torch is not None:
                         sequence[:, idx, :],
                         initial_z3=z3,
                         initial_agents=agents,
+                        initial_agent_memory=agent_memory,
                         target=target_sequence[:, idx, :],
                         update_state=False,
                         add_noise=add_noise,
@@ -652,6 +700,7 @@ if torch is not None:
                     total_loss = total_loss + output["losses"]["total"]
                     z3 = output["z3_after"]
                     agents = output["agents_after"]
+                    agent_memory = output["agent_memory_after"]
                 total_loss = total_loss / max(1, end - start)
                 total_loss.backward()
                 if clip_grad_norm is not None:
@@ -667,10 +716,11 @@ if torch is not None:
                 chunk_losses.append(metrics["chunk_loss"])
                 z3 = z3.detach()
                 agents = agents.detach()
+                agent_memory = agent_memory.detach()
 
             if commit_recurrent_state and final_output is not None:
                 with torch.no_grad():
-                    self._commit_state(z3, agents, final_output["metrics"], final_output.get("agent_utility"))
+                    self._commit_state(z3, agents, agent_memory, final_output["metrics"], final_output.get("agent_utility"))
 
             summary = dict(chunk_metrics[-1]) if chunk_metrics else {}
             if chunk_losses:
@@ -715,6 +765,7 @@ if torch is not None:
                     "state_dict": self.state_dict(),
                     "z3_state": self.z3_state.detach().cpu(),
                     "zprime_state": self.zprime_state.detach().cpu(),
+                    "agent_memory_state": self.agent_memory_state.detach().cpu(),
                     "last_metrics": self.last_metrics.detach().cpu(),
                 },
                 path,
@@ -732,6 +783,8 @@ if torch is not None:
             device = next(model.parameters()).device
             model.z3_state = payload["z3_state"].to(device)
             model.zprime_state = payload["zprime_state"].to(device)
+            if "agent_memory_state" in payload:
+                model.agent_memory_state = payload["agent_memory_state"].to(device)
             if "last_metrics" in payload:
                 loaded_metrics = payload["last_metrics"].to(device)
                 target_count = model.metric_count()
@@ -912,6 +965,15 @@ if torch is not None:
                 raise ValueError(f"agents must have shape [{batch}, {cfg.agent_count}, {cfg.local_dim}], got {tuple(agents.shape)}")
             return agents
 
+        def _prepare_agent_memory(self, batch: int, device: torch.device, initial_agent_memory: Optional[torch.Tensor]) -> torch.Tensor:
+            cfg = self.config
+            memory = self.agent_memory_state.to(device) if initial_agent_memory is None else initial_agent_memory.to(device)
+            if memory.dim() == 2:
+                memory = memory.unsqueeze(0).expand(batch, -1, -1)
+            if memory.shape != (batch, cfg.agent_count, cfg.agent_memory_dim):
+                raise ValueError(f"agent_memory must have shape [{batch}, {cfg.agent_count}, {cfg.agent_memory_dim}], got {tuple(memory.shape)}")
+            return memory
+
         def contextual_thresholds(self, context: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
             """Return bounded context-adaptive novelty/coherence thresholds and temperatures."""
             cfg = self.config
@@ -934,11 +996,13 @@ if torch is not None:
             self,
             z3_next: torch.Tensor,
             z_next: torch.Tensor,
+            agent_memory_next: torch.Tensor,
             metrics: torch.Tensor,
             agent_utility: Optional[torch.Tensor] = None,
         ) -> None:
             self.z3_state = z3_next.mean(dim=0).detach()
             self.zprime_state = z_next.mean(dim=0).detach()
+            self.agent_memory_state = agent_memory_next.mean(dim=0).detach()
             self.last_metrics = metrics.detach()
             if agent_utility is not None:
                 cfg = self.config
