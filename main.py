@@ -11,14 +11,18 @@ import contextlib
 import json
 import math
 import os
+import secrets
 import sys
 import threading
 import time
+from collections import defaultdict, deque
 from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
 
 from language_stream import LanguageStream
@@ -30,10 +34,21 @@ from z3_language_decoder import (
     get_decoder, get_tokenizer, generate as z3_generate,
     train_language_step, save_decoder, load_decoder,
 )
-from z3_articulatory_synth import (
-    get_articulatory_voice, TrajectoryControlLayer,
-)
-from z3_acoustic_encoder import get_acoustic_encoder
+try:
+    from z3_articulatory_synth import get_articulatory_voice, TrajectoryControlLayer
+except ImportError as exc:  # Keep the API importable for dependency diagnostics.
+    get_articulatory_voice = None  # type: ignore[assignment]
+    TrajectoryControlLayer = None  # type: ignore[assignment]
+    ARTICULATORY_IMPORT_ERROR = str(exc)
+else:
+    ARTICULATORY_IMPORT_ERROR = None
+try:
+    from z3_acoustic_encoder import get_acoustic_encoder
+except ImportError as exc:  # Keep the API importable for dependency diagnostics.
+    get_acoustic_encoder = None  # type: ignore[assignment]
+    ACOUSTIC_IMPORT_ERROR = str(exc)
+else:
+    ACOUSTIC_IMPORT_ERROR = None
 from infra_adapters import InfrastructureHub
 from resonant_memory import ResonantMemoryGeometry
 from response_adapter import build_z3_expression
@@ -82,16 +97,19 @@ async def _lifespan(app_: Any):
     except Exception as exc:
         print(f"[Z³ Decoder] Startup skipped: {exc}")
     # Start articulatory voice
-    try:
-        cfg = _MODEL.config if _MODEL is not None else None
-        get_articulatory_voice(
-            z3_prediction_dim=getattr(cfg, 'evidence_dim', 24)
-                              + getattr(cfg, 'state_dim', 64)
-                              + getattr(cfg, 'context_dim', 48),
-        )
-        print("[Z³ Voice] Articulatory voice module ready.")
-    except Exception as exc:
-        print(f"[Z³ Voice] Startup skipped: {exc}")
+    if get_articulatory_voice is not None:
+        try:
+            cfg = _MODEL.config if _MODEL is not None else None
+            get_articulatory_voice(
+                z3_prediction_dim=getattr(cfg, 'evidence_dim', 24)
+                                  + getattr(cfg, 'state_dim', 64)
+                                  + getattr(cfg, 'context_dim', 48),
+            )
+            print("[Z³ Voice] Articulatory voice module ready.")
+        except Exception as exc:
+            print(f"[Z³ Voice] Startup skipped: {exc}")
+    else:
+        print(f"[Z³ Voice] Startup skipped: {ARTICULATORY_IMPORT_ERROR}")
     yield
     # --- shutdown ---
     try:
@@ -111,6 +129,58 @@ app = FastAPI(
     description="Runtime membrane for the standalone Z³ / Z-prime neural dynamics core.",
     version="0.2.0",
     lifespan=_lifespan,
+)
+
+_PUBLIC_PATHS = {"/", "/interface", "/api", "/health", "/docs", "/openapi.json", "/redoc"}
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_API_TOKEN = os.environ.get("Z3_API_TOKEN", "")
+_AUTH_REQUIRED = os.environ.get("Z3_REQUIRE_AUTH", "").lower() in {"1", "true", "yes", "on"} or bool(os.environ.get("RAILWAY_ENVIRONMENT_NAME"))
+_RATE_LIMIT_WINDOW = max(1, int(os.environ.get("Z3_RATE_LIMIT_WINDOW_SECONDS", "60")))
+_RATE_LIMIT_REQUESTS = max(1, int(os.environ.get("Z3_RATE_LIMIT_REQUESTS", "120")))
+_RATE_LIMIT_STATE: dict[str, deque[float]] = defaultdict(deque)
+_RATE_LIMIT_LOCK = threading.Lock()
+
+
+class RuntimeSecurityMiddleware(BaseHTTPMiddleware):
+    """Protect non-public routes and bound request volume in production."""
+
+    @staticmethod
+    def _provided_token(request: Any) -> str:
+        authorization = request.headers.get("authorization", "")
+        if authorization.lower().startswith("bearer "):
+            return authorization[7:].strip()
+        return request.headers.get("x-api-key", "").strip()
+
+    @staticmethod
+    def _client_key(request: Any) -> str:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        return forwarded.split(",", 1)[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+
+    async def dispatch(self, request: Any, call_next: Any) -> Any:
+        path = request.url.path
+        if _AUTH_REQUIRED and request.method != "OPTIONS" and path not in _PUBLIC_PATHS:
+            if not _API_TOKEN or not secrets.compare_digest(self._provided_token(request), _API_TOKEN):
+                return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        if request.method in _MUTATING_METHODS:
+            key = self._client_key(request)
+            now = time.monotonic()
+            with _RATE_LIMIT_LOCK:
+                timestamps = _RATE_LIMIT_STATE[key]
+                while timestamps and now - timestamps[0] >= _RATE_LIMIT_WINDOW:
+                    timestamps.popleft()
+                if len(timestamps) >= _RATE_LIMIT_REQUESTS:
+                    return JSONResponse({"detail": "Rate limit exceeded"}, status_code=429, headers={"Retry-After": str(_RATE_LIMIT_WINDOW)})
+                timestamps.append(now)
+        return await call_next(request)
+
+
+app.add_middleware(RuntimeSecurityMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in os.environ.get("Z3_CORS_ORIGINS", "http://localhost:8000").split(",") if origin.strip()],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
 
 _MODEL = None
@@ -753,7 +823,20 @@ def health() -> Dict[str, Any]:
         status = "degraded"
     return {
         "status": status,
+        "security": {
+            "auth_required": _AUTH_REQUIRED,
+            "auth_configured": bool(_API_TOKEN),
+            "cors_origins": [origin.strip() for origin in os.environ.get("Z3_CORS_ORIGINS", "http://localhost:8000").split(",") if origin.strip()],
+            "rate_limit_requests": _RATE_LIMIT_REQUESTS,
+            "rate_limit_window_seconds": _RATE_LIMIT_WINDOW,
+        },
         "torch_available": torch is not None,
+        "optional_modules": {
+            "acoustic_encoder": get_acoustic_encoder is not None,
+            "articulatory_voice": get_articulatory_voice is not None,
+            "articulatory_import_error": ARTICULATORY_IMPORT_ERROR,
+            "acoustic_import_error": ACOUSTIC_IMPORT_ERROR,
+        },
         "model_loaded": model_loaded,
         "state_loaded": _STATE_LOADED,
         "import_error": IMPORT_ERROR,
@@ -1302,6 +1385,13 @@ async def neural_stream_ws(websocket: WebSocket) -> None:
       {"type": "mic_pitch", "hz": 440.0}       — microphone pitch input
       {"type": "trigger_save"}                  — manual W matrix save
     """
+    if _AUTH_REQUIRED:
+        authorization = websocket.headers.get("authorization", "")
+        header_token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else websocket.headers.get("x-api-key", "").strip()
+        provided_token = header_token or websocket.query_params.get("token", "").strip()
+        if not _API_TOKEN or not secrets.compare_digest(provided_token, _API_TOKEN):
+            await websocket.close(code=1008, reason="Authentication required")
+            return
     manager = get_ws_manager()
     synth = get_synthesizer()
     await manager.connect(websocket)
@@ -1455,4 +1545,4 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("PORT", "8000"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, workers=1)

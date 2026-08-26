@@ -347,3 +347,20 @@ The integrated observation pathway now attempts to write each observation to the
 This repository now includes a production-shaped conscience membrane in `conscience.py`, governed by the external policy file `config/conscience_policy.json`. The membrane evaluates proposals using current input context, online world-model metrics, resonant memory output, and Z³ metrics before neural state mutation. It also exposes auditable API endpoints at `/conscience`, `/conscience/policy`, `/conscience/evaluate`, and `/conscience/outcome`.
 
 See `CONSCIENCE_PRODUCTION.md` for the implementation map, validation commands, endpoint semantics, and calibration workflow.
+
+
+## Production Security and Operations
+
+The runtime is open for local development by default. In production, set `Z3_API_TOKEN` and either set `Z3_REQUIRE_AUTH=true` or rely on the automatic Railway-environment enforcement. Authenticated clients may use `Authorization: Bearer <token>` or `X-API-Key: <token>`. The WebSocket dashboard accepts the same headers and a `token` query parameter when browser upgrade headers cannot be customized.
+
+Set `Z3_CORS_ORIGINS` to a comma-separated allowlist of trusted dashboard origins. Mutating requests are rate-limited with `Z3_RATE_LIMIT_REQUESTS` over `Z3_RATE_LIMIT_WINDOW_SECONDS`. The default launch path uses one Uvicorn worker because recurrent neural state and the autonomous loop are process-local.
+
+State JSON files are written atomically, retain a `.previous` copy, and quarantine malformed current files before attempting recovery. Recovery details are returned by the state-load operation. See [SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md), and [.env.example](.env.example) for deployment configuration.
+
+The canonical validation command is:
+
+```bash
+./scripts/run_tests.sh
+python -m compileall -q .
+python -m build
+```

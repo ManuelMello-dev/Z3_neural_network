@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -22,6 +23,8 @@ DEFAULT_STATE_DIR = os.environ.get(
 
 class StateStore:
     """Small file-backed persistence layer for Railway or local development."""
+
+    SCHEMA_VERSION = 1
 
     def __init__(self, state_dir: str | os.PathLike[str] = DEFAULT_STATE_DIR) -> None:
         self.state_dir = Path(state_dir)
@@ -79,7 +82,7 @@ class StateStore:
         corpus_ingestor: Optional[Any] = None,
         conscience: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        loaded: Dict[str, Any] = {"loaded_at": time.time(), "loaded": {}}
+        loaded: Dict[str, Any] = {"loaded_at": time.time(), "loaded": {}, "recovered": {}, "errors": []}
         if self.neural_path.exists():
             loaded_model = model_cls.load_checkpoint(self.neural_path, map_location="cpu")
             model = loaded_model
@@ -87,21 +90,21 @@ class StateStore:
         else:
             loaded["loaded"]["neural_checkpoint"] = False
 
-        world_state = self._read_json(self.world_model_path)
+        world_state = self._read_json(self.world_model_path, loaded=loaded, key="world_model")
         if world_state:
             world_model.load_state(world_state)
             loaded["loaded"]["world_model"] = True
         else:
             loaded["loaded"]["world_model"] = False
 
-        memory_state = self._read_json(self.memory_path)
+        memory_state = self._read_json(self.memory_path, loaded=loaded, key="resonant_memory")
         if memory_state:
             memory.load_state(memory_state)
             loaded["loaded"]["resonant_memory"] = True
         else:
             loaded["loaded"]["resonant_memory"] = False
 
-        conscience_state = self._read_json(self.conscience_path)
+        conscience_state = self._read_json(self.conscience_path, loaded=loaded, key="conscience")
         if conscience is not None and conscience_state:
             conscience.load_state(conscience_state)
             loaded["loaded"]["conscience"] = True
@@ -123,17 +126,47 @@ class StateStore:
             **{**corpus_ingestor.config.__dict__, "checkpoint_path": str(self.corpus_ingestor_path)}
         )
 
-    @staticmethod
-    def _write_json(path: Path, payload: Dict[str, Any]) -> None:
+    @classmethod
+    def _write_json(cls, path: Path, payload: Dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp_path = path.with_suffix(path.suffix + ".tmp")
+        previous_path = path.with_suffix(path.suffix + ".previous")
+        wrapped = {"schema_version": cls.SCHEMA_VERSION, "payload": payload}
         with tmp_path.open("w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
+            json.dump(wrapped, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if path.exists():
+            shutil.copy2(path, previous_path)
         tmp_path.replace(path)
 
-    @staticmethod
-    def _read_json(path: Path) -> Dict[str, Any]:
+    @classmethod
+    def _read_json(cls, path: Path, *, loaded: Optional[Dict[str, Any]] = None, key: str = "") -> Dict[str, Any]:
         if not path.exists():
             return {}
-        with path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+        candidates = [path, path.with_suffix(path.suffix + ".previous")]
+        for candidate in candidates:
+            try:
+                with candidate.open("r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                if isinstance(data, dict) and "payload" in data:
+                    if data.get("schema_version") != cls.SCHEMA_VERSION:
+                        raise ValueError(f"unsupported schema version: {data.get('schema_version')}")
+                    payload = data["payload"]
+                else:
+                    payload = data
+                if not isinstance(payload, dict):
+                    raise ValueError("persisted JSON payload must be an object")
+                if candidate != path and loaded is not None:
+                    loaded.setdefault("recovered", {})[key] = str(candidate)
+                return payload
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                if loaded is not None:
+                    loaded.setdefault("errors", []).append(f"{candidate.name}: {exc}")
+                if candidate == path:
+                    try:
+                        quarantine = path.with_suffix(path.suffix + f".corrupt.{int(time.time())}")
+                        path.replace(quarantine)
+                    except OSError:
+                        pass
+        return {}
