@@ -11,6 +11,7 @@ import contextlib
 import json
 import math
 import os
+import sys
 import threading
 import time
 from dataclasses import replace
@@ -234,9 +235,16 @@ class ConscienceOutcomeRequest(BaseModel):
 
 
 def _render_interface() -> str:
-    interface_path = os.path.join(os.path.dirname(__file__), "interface.html")
-    with open(interface_path, "r", encoding="utf-8") as handle:
-        return handle.read()
+    """Load the dashboard from a checkout or an installed distribution."""
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "interface.html"),
+        os.path.join(sys.prefix, "share", "z3-neural-network", "interface.html"),
+    ]
+    for interface_path in candidates:
+        if os.path.isfile(interface_path):
+            with open(interface_path, "r", encoding="utf-8") as handle:
+                return handle.read()
+    raise FileNotFoundError("interface.html was not found in the source or installed asset locations")
 
 
 def _status_payload() -> Dict[str, Any]:

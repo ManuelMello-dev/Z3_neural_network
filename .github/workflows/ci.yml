@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install project and test dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[test]"
+
+      - name: Compile Python modules
+        run: python -m compileall -q .
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Validate API membrane
+        run: python validate_api.py
+
+      - name: Build distribution
+        run: python -m pip install build && python -m build
+
+      - name: Verify distribution contents
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+
+          wheels = glob.glob("dist/*.whl")
+          assert wheels, "No wheel was built"
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              names = set(wheel.namelist())
+          required_modules = {
+              "z3_audio_synth.py",
+              "z3_language_decoder.py",
+              "z3_acoustic_encoder.py",
+              "z3_articulatory_synth.py",
+          }
+          missing_modules = [name for name in required_modules if not any(path.endswith(name) for path in names)]
+          assert not missing_modules, f"Missing runtime modules: {missing_modules}"
+          assert any(path.endswith("share/z3-neural-network/interface.html") for path in names), "Missing dashboard asset"
+          assert any(path.endswith("share/z3-neural-network/config/conscience_policy.json") for path in names), "Missing conscience policy asset"
+          PY

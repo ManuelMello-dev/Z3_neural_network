@@ -18,6 +18,7 @@ import hashlib
 import json
 import math
 import os
+import sys
 import re
 import time
 from collections import deque
@@ -158,11 +159,15 @@ class ConsciencePolicy:
 
     @classmethod
     def load(cls, path: Optional[str | os.PathLike[str]] = None, overrides: Optional[Mapping[str, Any]] = None) -> "ConsciencePolicy":
-        policy_path = Path(
-            path
-            or os.environ.get("Z3_CONSCIENCE_POLICY_PATH", "")
-            or Path(__file__).with_name("config").joinpath("conscience_policy.json")
-        )
+        configured_path = path or os.environ.get("Z3_CONSCIENCE_POLICY_PATH", "")
+        candidates = [
+            Path(configured_path) if configured_path else None,
+            Path(__file__).with_name("config").joinpath("conscience_policy.json"),
+            Path(sys.prefix) / "share" / "z3-neural-network" / "config" / "conscience_policy.json",
+        ]
+        policy_path = next((candidate for candidate in candidates if candidate and candidate.is_file()), None)
+        if policy_path is None:
+            raise FileNotFoundError("conscience_policy.json was not found in the configured, source, or installed asset locations")
         with policy_path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
         if overrides:
