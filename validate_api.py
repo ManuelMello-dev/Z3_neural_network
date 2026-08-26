@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import json
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 compatibility.
+    import tomli as tomllib
 
 from fastapi.testclient import TestClient
 
