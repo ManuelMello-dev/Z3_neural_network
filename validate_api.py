@@ -96,7 +96,7 @@ assert language.status_code == 200, language.text
 assert language.json().get("dataset", {}).get("domain") == "language:corpus"
 
 main._LANGUAGE_STREAM.inline_text = (
-    "Z3 language validation segment carries enough words to pass the configured minimum word threshold and the observer should handle a simulated direct language training failure without returning an ASGI error while still allowing the remaining language observations to flow through memory and the world model"
+    "Z3 language validation segment carries enough unique words to pass every configured admission threshold. The observer should handle a simulated direct language training failure without returning an ASGI error while still allowing the remaining language observations to flow through memory and the world model. This fixture deliberately contains multiple independent sentences and varied vocabulary so segmentation, minimum word, byte, and deduplication checks all have a valid input."
 )
 main._LANGUAGE_STREAM._segments = []
 main._LANGUAGE_STREAM._offset = 0
