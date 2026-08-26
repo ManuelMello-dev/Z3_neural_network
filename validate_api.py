@@ -6,6 +6,7 @@ import os
 
 os.environ.setdefault("LANGUAGE_TRAINING_MIN_WORDS", "1")
 os.environ.setdefault("Z3_CORPUS_MIN_WORDS", "1")
+os.environ.setdefault("Z3_CORPUS_DEDUPLICATE_TEXTS", "false")
 
 try:
     import tomllib
