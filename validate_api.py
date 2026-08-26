@@ -2,6 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
+
+os.environ.setdefault("LANGUAGE_TRAINING_MIN_WORDS", "1")
+os.environ.setdefault("Z3_CORPUS_MIN_WORDS", "1")
+
 try:
     import tomllib
 except ModuleNotFoundError:  # Python 3.10 compatibility.
