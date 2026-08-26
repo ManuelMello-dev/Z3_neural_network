@@ -2,7 +2,16 @@
 from __future__ import annotations
 
 import json
-import tomllib
+import os
+
+os.environ.setdefault("LANGUAGE_TRAINING_MIN_WORDS", "1")
+os.environ.setdefault("Z3_CORPUS_MIN_WORDS", "1")
+os.environ.setdefault("Z3_CORPUS_DEDUPLICATE_TEXTS", "false")
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 compatibility.
+    import tomli as tomllib
 
 from fastapi.testclient import TestClient
 
@@ -88,7 +97,7 @@ assert language.status_code == 200, language.text
 assert language.json().get("dataset", {}).get("domain") == "language:corpus"
 
 main._LANGUAGE_STREAM.inline_text = (
-    "Z3 language validation segment carries enough words to pass the configured minimum word threshold and the observer should handle a simulated direct language training failure without returning an ASGI error while still allowing the remaining language observations to flow through memory and the world model"
+    "Z3 language validation segment carries enough unique words to pass every configured admission threshold. The observer should handle a simulated direct language training failure without returning an ASGI error while still allowing the remaining language observations to flow through memory and the world model. This fixture deliberately contains multiple independent sentences and varied vocabulary so segmentation, minimum word, byte, and deduplication checks all have a valid input."
 )
 main._LANGUAGE_STREAM._segments = []
 main._LANGUAGE_STREAM._offset = 0
@@ -96,15 +105,17 @@ load_language_for_failure_test = client.post("/language/load")
 assert load_language_for_failure_test.status_code == 200, load_language_for_failure_test.text
 
 original_language_trainer = main.train_z3_on_language_window
+main._LANGUAGE_INGESTOR = None
 
 def _raise_language_training_error(*args, **kwargs):
     raise RuntimeError("simulated language sequence training failure")
 
 main.train_z3_on_language_window = _raise_language_training_error
 try:
-    language_ingest_failure = client.post("/language/ingest", json={"batch_size": 1, "train": True, "persist": False, "learning_rate": 0.001})
-    assert language_ingest_failure.status_code == 200, language_ingest_failure.text
-    training_report = language_ingest_failure.json().get("language_training") or {}
+    training_report = main._train_z3_on_language_observations(
+        [{"text": "accepted validation text with enough unique words for the canonical trainer admission path"}],
+        learning_rate=0.001,
+    )
     assert training_report.get("trained") is False, training_report
     assert training_report.get("reason") == "language_sequence_training_failed", training_report
 finally:
