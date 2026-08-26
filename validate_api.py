@@ -104,6 +104,7 @@ load_language_for_failure_test = client.post("/language/load")
 assert load_language_for_failure_test.status_code == 200, load_language_for_failure_test.text
 
 original_language_trainer = main.train_z3_on_language_window
+main._LANGUAGE_INGESTOR = None
 
 def _raise_language_training_error(*args, **kwargs):
     raise RuntimeError("simulated language sequence training failure")
