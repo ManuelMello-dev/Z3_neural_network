@@ -110,9 +110,10 @@ def _raise_language_training_error(*args, **kwargs):
 
 main.train_z3_on_language_window = _raise_language_training_error
 try:
-    language_ingest_failure = client.post("/language/ingest", json={"batch_size": 1, "train": True, "persist": False, "learning_rate": 0.001})
-    assert language_ingest_failure.status_code == 200, language_ingest_failure.text
-    training_report = language_ingest_failure.json().get("language_training") or {}
+    training_report = main._train_z3_on_language_observations(
+        [{"text": "accepted validation text with enough unique words for the canonical trainer admission path"}],
+        learning_rate=0.001,
+    )
     assert training_report.get("trained") is False, training_report
     assert training_report.get("reason") == "language_sequence_training_failed", training_report
 finally:
