@@ -7,8 +7,10 @@ persistence across Railway restarts when a volume is attached.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
+import logging
 import math
 import os
 import secrets
@@ -24,6 +26,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger("z3.runtime")
 
 from language_stream import LanguageStream
 from curriculum_stream import CurriculumStream
@@ -72,6 +76,8 @@ else:
 async def _lifespan(app_: Any):
     """FastAPI lifespan: start audio synth on boot, save + stop on shutdown."""
     # --- startup ---
+    global _MAIN_LOOP
+    _MAIN_LOOP = asyncio.get_running_loop()
     try:
         agent_count = 8
         if _MODEL is not None:
@@ -192,8 +198,14 @@ _CURRICULUM_STREAM = CurriculumStream()
 _INFRA = InfrastructureHub()
 _STATE_STORE = StateStore()
 _STATE_LOADED = False
-_RUNTIME_LOCK = threading.Lock()
+# Re-entrant: integrated_observe is reached both directly and from inside other
+# locked paths (runtime tick -> language/curriculum ingest -> observe).
+_RUNTIME_LOCK = threading.RLock()
+# Event loop that owns WebSocket connections; captured in lifespan so sync
+# endpoints (threadpool) and the runtime thread can schedule broadcasts.
+_MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
 _OPTIMIZER = None
+_OPTIMIZER_MODEL_ID: Optional[int] = None
 _LANGUAGE_INGESTOR = None
 _RUNTIME_LOOP = None
 _RUNTIME_TICK_SEQUENCE = 0
@@ -363,9 +375,20 @@ def get_model() -> Any:
 
 
 def _get_optimizer(model: Any, learning_rate: float) -> Any:
-    global _OPTIMIZER
-    if _OPTIMIZER is None or abs(float(_OPTIMIZER.param_groups[0]["lr"]) - float(learning_rate)) > 1e-12:
+    """Return the single persistent optimizer bound to the live model.
+
+    The optimizer is rebuilt only when the model object changes (boot, load,
+    reset). A learning-rate change is applied in place to every param group so
+    Adam moments and any extra groups (e.g. the language decoder group added by
+    /train-language) survive.
+    """
+    global _OPTIMIZER, _OPTIMIZER_MODEL_ID
+    if _OPTIMIZER is None or _OPTIMIZER_MODEL_ID != id(model):
         _OPTIMIZER = torch.optim.AdamW(model.parameters(), lr=float(learning_rate))
+        _OPTIMIZER_MODEL_ID = id(model)
+    else:
+        for group in _OPTIMIZER.param_groups:
+            group["lr"] = float(learning_rate)
     return _OPTIMIZER
 
 
@@ -448,10 +471,67 @@ def _ensure_finite_neural_runtime(model: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _broadcast_from_thread(payload: Dict[str, Any]) -> bool:
+    """Schedule a WebSocket JSON broadcast on the main event loop from any thread."""
+    loop = _MAIN_LOOP
+    if loop is None or loop.is_closed():
+        return False
+    try:
+        asyncio.run_coroutine_threadsafe(get_ws_manager().send_json(payload), loop)
+        return True
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("WebSocket broadcast scheduling failed: %s", exc)
+        return False
+
+
+def _push_voice_state(model: Any, neural_output: Dict[str, Any], memory_output: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Drive the audio synth and articulatory voice from a committed Z³ output."""
+    status: Dict[str, Any] = {"synth": False, "articulatory": False, "broadcast": False}
+    try:
+        get_synthesizer(model.config.agent_count).push_z3_state(neural_output)
+        status["synth"] = True
+    except Exception as exc:
+        logger.debug("Synth push failed: %s", exc)
+    if get_articulatory_voice is None:
+        return status
+    try:
+        cfg = model.config
+        voice = get_articulatory_voice(z3_prediction_dim=cfg.evidence_dim + cfg.state_dim + cfg.context_dim)
+        pred_input = torch.cat(
+            [neural_output["integrated_evidence"], neural_output["z3_after"], neural_output["context"]],
+            dim=-1,
+        )
+        mem_ctx = TrajectoryControlLayer.encode_memory_context(memory_output or {}, device=pred_input.device)
+        with torch.no_grad():
+            broadcast = voice.articulatory_state_broadcast(pred_input, mem_ctx)
+        status["articulatory"] = True
+        status["broadcast"] = _broadcast_from_thread(broadcast)
+    except Exception as exc:
+        logger.warning("Articulatory push failed: %s", exc)
+    return status
+
+
+_COMPOSE_OVERFLOW_WARNED = False
+
+
 def _compose_z3_input(world_output: Dict[str, Any], memory_output: Dict[str, Any], expected_dim: int) -> List[float]:
+    """Compose the Z³ input vector from world-model and resonant-memory outputs.
+
+    Layout (default input_dim=16, latent_dim=8):
+      0-7  world latent state
+      8    memory salience (replaces world total_loss, which is a fixed linear
+           combination of slots 9-12 and carried no independent signal)
+      9-15 prediction, reconstruction, memory, coherence-alignment losses,
+           novelty, nearest-memory distance, memory reconstruction confidence
+
+    Previously 17 features were truncated to 16, silently dropping salience.
+    If the vector is still too long (larger latent_dim), latent dimensions are
+    trimmed so every scalar signal reaches Z³; nothing is dropped silently.
+    """
+    global _COMPOSE_OVERFLOW_WARNED
     latent = [float(v) for v in world_output.get("latent_state", [])]
-    features = latent + [
-        float(world_output.get("total_loss", 0.0)),
+    scalars = [
+        float(memory_output.get("salience", 0.0)),
         float(world_output.get("prediction_loss", 0.0)),
         float(world_output.get("reconstruction_loss", 0.0)),
         float(world_output.get("memory_loss", 0.0)),
@@ -459,8 +539,17 @@ def _compose_z3_input(world_output: Dict[str, Any], memory_output: Dict[str, Any
         float(world_output.get("novelty", 0.0)),
         float(world_output.get("nearest_memory_distance", 0.0)),
         float(memory_output.get("reconstruction_confidence", 0.0)),
-        float(memory_output.get("salience", 0.0)),
     ]
+    latent_budget = max(int(expected_dim) - len(scalars), 0)
+    if len(latent) > latent_budget:
+        if not _COMPOSE_OVERFLOW_WARNED:
+            logger.warning(
+                "Z3 input overflow: latent_dim=%d + %d scalars > input_dim=%d; trimming latent tail",
+                len(latent), len(scalars), expected_dim,
+            )
+            _COMPOSE_OVERFLOW_WARNED = True
+        latent = latent[:latent_budget]
+    features = latent + scalars
     if len(features) < expected_dim:
         features.extend([0.0] * (expected_dim - len(features)))
     return features[:expected_dim]
@@ -588,8 +677,9 @@ def _train_z3_on_language_observations(observations: List[Dict[str, Any]], *, le
     if not texts:
         return {"trained": False, "reason": "no_text", "texts": 0, "mode": "canonical_corpus_neural_ingestor"}
     metadata = [{key: value for key, value in obs.items() if key not in ("text", "content")} for obs in observations]
-    ingestor = _get_language_ingestor(batch_size=len(texts), learning_rate=learning_rate)
-    report = ingestor.train_texts_now(texts, metadata=metadata)
+    with _RUNTIME_LOCK:
+        ingestor = _get_language_ingestor(batch_size=len(texts), learning_rate=learning_rate)
+        report = ingestor.train_texts_now(texts, metadata=metadata)
     report["ingestor_health"] = ingestor.health_state()
     return report
 
@@ -864,7 +954,7 @@ def config() -> Dict[str, Any]:
 def step(request: StepRequest) -> Dict[str, Any]:
     model = get_model()
     x = _tensor_from_vector(request.x, model.config.input_dim)
-    with torch.no_grad():
+    with _RUNTIME_LOCK, torch.no_grad():
         output = model.forward(
             x,
             hard_gate=request.hard_gate,
@@ -888,9 +978,13 @@ def train_step(request: TrainStepRequest) -> Dict[str, Any]:
     model = get_model()
     x = _tensor_from_vector(request.x, model.config.input_dim)
     target = _tensor_from_vector(request.target, model.config.input_dim) if request.target is not None else None
-    optimizer = _get_optimizer(model, request.learning_rate)
-    metrics = model.train_step(optimizer, x, target=target, update_recurrent_state=True)
-    response = {"metrics": metrics, "projection": model.public_projection(model.step_runtime(x, hard_gate=False))}
+    with _RUNTIME_LOCK:
+        optimizer = _get_optimizer(model, request.learning_rate)
+        metrics = model.train_step(optimizer, x, target=target, update_recurrent_state=True)
+        # Read the projection without advancing the recurrent state a second time.
+        with torch.no_grad():
+            projection_output = model.forward(x, hard_gate=False, update_state=False, add_noise=False)
+    response = {"metrics": metrics, "projection": model.public_projection(projection_output)}
     manifest = _persist_if_requested(request.persist)
     if manifest:
         response["state_manifest"] = manifest
@@ -1157,81 +1251,64 @@ def memory_observe(request: ObservationRequest) -> Dict[str, Any]:
 @app.post("/observe")
 def integrated_observe(request: IntegratedObserveRequest) -> Dict[str, Any]:
     model = get_model()
-    phi, sigma = _current_phi_sigma(model)
-    phi_hint = request.phi_hint if request.phi_hint is not None else phi
-    sigma_hint = request.sigma_hint if request.sigma_hint is not None else sigma
+    # World model, resonant memory, conscience and Z³ are all mutated here; hold
+    # the runtime lock so the autonomous loop cannot train concurrently.
+    with _RUNTIME_LOCK:
+        phi, sigma = _current_phi_sigma(model)
+        phi_hint = request.phi_hint if request.phi_hint is not None else phi
+        sigma_hint = request.sigma_hint if request.sigma_hint is not None else sigma
 
-    world_output = _WORLD_MODEL.observe(request.observation, domain=request.domain)
-    constitutional_context = {
-        "phi": phi_hint,
-        "sigma": sigma_hint,
-        "coherence": phi_hint,
-        "drift": float(model.metrics_to_dict(model.last_metrics).get("z3_delta_norm", 0.0) or 0.0),
-        "regime": "z3_integrated_observe",
-    }
-    memory_output = _MEMORY.observe(
-        request.observation,
-        domain=request.domain,
-        phi_hint=phi_hint,
-        sigma_hint=sigma_hint,
-        constitutional_context=constitutional_context,
-    )
-    world_dict = world_output.to_dict()
-    prior_z3_metrics = model.metrics_to_dict(model.last_metrics)
-    conscience_result = _evaluate_conscience(
-        request.observation,
-        domain=request.domain,
-        world_output=world_dict,
-        memory_output=memory_output,
-        z3_metrics=prior_z3_metrics,
-        context={"kind": "integrated_observe"},
-    )
-    z3_vector = _compose_z3_input(world_dict, memory_output, model.config.input_dim)
-    x = _tensor_from_vector(z3_vector, model.config.input_dim)
-
-    if conscience_result.get("decision") == "reject":
-        z3_response = {
-            "blocked_by_conscience": True,
-            "metrics": prior_z3_metrics,
-            "projection": None,
-            "reason": conscience_result.get("rationale"),
+        world_output = _WORLD_MODEL.observe(request.observation, domain=request.domain)
+        constitutional_context = {
+            "phi": phi_hint,
+            "sigma": sigma_hint,
+            "coherence": phi_hint,
+            "drift": float(model.metrics_to_dict(model.last_metrics).get("z3_delta_norm", 0.0) or 0.0),
+            "regime": "z3_integrated_observe",
         }
-    elif request.train:
-        optimizer = _get_optimizer(model, request.learning_rate)
-        z3_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
-        z3_response: Dict[str, Any] = {"metrics": z3_metrics, "projection": model.public_projection(model.step_runtime(x, hard_gate=False))}
-    else:
-        with torch.no_grad():
-            neural_output = model.forward(x, hard_gate=request.hard_gate, update_state=True, add_noise=False)
-        z3_response = _metrics(neural_output, model)
-        # Feed live phase state into the audio synthesizer
-        try:
-            get_synthesizer(model.config.agent_count).push_z3_state(neural_output)
-        except Exception:
-            pass
-        # Push articulatory state broadcast over WebSocket
-        try:
-            cfg = model.config
-            voice = get_articulatory_voice(
-                z3_prediction_dim=cfg.evidence_dim + cfg.state_dim + cfg.context_dim
-            )
-            pred_input = torch.cat([
-                neural_output["integrated_evidence"],
-                neural_output["z3_after"],
-                neural_output["context"],
-            ], dim=-1)
-            mem_ctx = TrajectoryControlLayer.encode_memory_context(
-                response.get("memory", {}),
-                device=pred_input.device,
-            )
-            broadcast = voice.articulatory_state_broadcast(pred_input, mem_ctx)
-            ws_mgr = get_ws_manager()
-            import asyncio
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.ensure_future(ws_mgr.send_json(broadcast))
-        except Exception:
-            pass
+        memory_output = _MEMORY.observe(
+            request.observation,
+            domain=request.domain,
+            phi_hint=phi_hint,
+            sigma_hint=sigma_hint,
+            constitutional_context=constitutional_context,
+        )
+        world_dict = world_output.to_dict()
+        prior_z3_metrics = model.metrics_to_dict(model.last_metrics)
+        conscience_result = _evaluate_conscience(
+            request.observation,
+            domain=request.domain,
+            world_output=world_dict,
+            memory_output=memory_output,
+            z3_metrics=prior_z3_metrics,
+            context={"kind": "integrated_observe"},
+        )
+        z3_vector = _compose_z3_input(world_dict, memory_output, model.config.input_dim)
+        x = _tensor_from_vector(z3_vector, model.config.input_dim)
+
+        neural_output: Optional[Dict[str, Any]] = None
+        if conscience_result.get("decision") == "reject":
+            z3_response: Dict[str, Any] = {
+                "blocked_by_conscience": True,
+                "metrics": prior_z3_metrics,
+                "projection": None,
+                "reason": conscience_result.get("rationale"),
+            }
+        elif request.train:
+            optimizer = _get_optimizer(model, request.learning_rate)
+            # train_step commits the recurrent state exactly once; the projection
+            # is read without a second state advance (was step_runtime -> 2x).
+            z3_metrics = model.train_step(optimizer, x, target=x, update_recurrent_state=True)
+            with torch.no_grad():
+                neural_output = model.forward(x, hard_gate=False, update_state=False, add_noise=False)
+            z3_response = {"metrics": z3_metrics, "projection": model.public_projection(neural_output)}
+        else:
+            with torch.no_grad():
+                neural_output = model.forward(x, hard_gate=request.hard_gate, update_state=True, add_noise=False)
+            z3_response = _metrics(neural_output, model)
+
+        if neural_output is not None:
+            z3_response["voice"] = _push_voice_state(model, neural_output, memory_output)
 
     response = {
         "input_vector": z3_vector,
@@ -1329,16 +1406,18 @@ def state_manifest() -> Dict[str, Any]:
 @app.post("/state/save")
 def state_save() -> Dict[str, Any]:
     model = get_model()
-    return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR, conscience=_CONSCIENCE)
+    with _RUNTIME_LOCK:
+        return _STATE_STORE.save_all(model=model, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR, conscience=_CONSCIENCE)
 
 
 @app.post("/state/load")
 def state_load() -> Dict[str, Any]:
     global _MODEL, _STATE_LOADED
     _require_torch()
-    loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR, conscience=_CONSCIENCE)
-    _MODEL = loaded.pop("model")
-    _STATE_LOADED = True
+    with _RUNTIME_LOCK:
+        loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR, conscience=_CONSCIENCE)
+        _MODEL = loaded.pop("model")
+        _STATE_LOADED = True
     return loaded
 
 

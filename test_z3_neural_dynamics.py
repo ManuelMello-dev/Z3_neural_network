@@ -211,6 +211,29 @@ with tempfile.TemporaryDirectory() as tmpdir:
     restored_legacy = Z3NeuralDynamics.load_checkpoint(legacy_checkpoint)
     check("Legacy checkpoint metric buffer is padded", tuple(restored_legacy.last_metrics.shape) == (restored_legacy.metric_count(),), restored_legacy.last_metrics.shape)
 
+# Regression: the global expected-evidence head used to be trained only by the
+# (subtracted) useful-novelty reward, so it learned to be wrong and novelty grew
+# without bound (1.2 -> 4108 in 300 steps).
+torch.manual_seed(0)
+nov_model = Z3NeuralDynamics()
+nov_x = torch.randn(4, nov_model.config.input_dim)
+nov_out = nov_model.forward(nov_x, update_state=False, add_noise=False)
+nov_out["losses"]["useful_novelty"].backward()
+reward_grad = sum(
+    float(p.grad.abs().sum()) for p in nov_model.expected_evidence.parameters() if p.grad is not None
+)
+check("Novelty reward does not train the expected-evidence predictor", reward_grad == 0.0, reward_grad)
+check("Expected-evidence prediction loss is reported", "expected_predictive" in nov_out["losses"], list(nov_out["losses"].keys()))
+nov_model.zero_grad()
+nov_opt = torch.optim.AdamW(nov_model.parameters(), lr=1e-3)
+nov_xs, nov_ys = generate_regime_sequence(400, nov_model.config.input_dim, batch_size=4)
+nov_trace = []
+for step in range(400):
+    nov_metrics = nov_model.train_step(nov_opt, nov_xs[step], target=nov_ys[step])
+    nov_trace.append(float(nov_metrics["mean_novelty"]))
+tail_novelty = sum(nov_trace[-100:]) / 100.0
+check("Novelty stays bounded under training", tail_novelty < 25.0 and all(v == v for v in nov_trace), {"tail_mean": tail_novelty, "max": max(nov_trace)})
+
 print("=" * 60)
 print(f"PASS={PASS} FAIL={FAIL} SKIP={SKIP}")
 raise SystemExit(1 if FAIL else 0)
