@@ -207,6 +207,8 @@ _MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None
 _OPTIMIZER = None
 _OPTIMIZER_MODEL_ID: Optional[int] = None
 _LANGUAGE_INGESTOR = None
+# What the last boot / state load actually restored (surfaced on /runtime and /state).
+_BOOT_RESTORE: Dict[str, Any] = {}
 _RUNTIME_LOOP = None
 _RUNTIME_TICK_SEQUENCE = 0
 _RUNTIME_LANGUAGE_CONFIG: Dict[str, Any] = {
@@ -365,8 +367,52 @@ def ensure_runtime_loaded() -> Any:
         if not _STATE_LOADED:
             loaded = _STATE_STORE.load_all(model=_MODEL, model_cls=Z3NeuralDynamics, world_model=_WORLD_MODEL, memory=_MEMORY, corpus_ingestor=_LANGUAGE_INGESTOR, conscience=_CONSCIENCE)
             _MODEL = loaded.get("model") or _MODEL
+            # Mark loaded before building dependants: _get_language_ingestor()
+            # re-enters get_model() on this thread (RLock) and must not reload.
             _STATE_LOADED = True
+            _restore_language_ingestor_at_boot(loaded)
         return _MODEL
+
+
+def _restore_language_ingestor_at_boot(loaded: Dict[str, Any]) -> None:
+    """Build the canonical ingestor against the restored model and restore it.
+
+    Previously the ingestor was created lazily on first language use, so at
+    boot nothing was restored (load_all received None) and, when it was
+    finally created, its optimizer restore failed on a param-group mismatch
+    and the valid checkpoint was quarantined as corrupt.
+    """
+    global _BOOT_RESTORE
+    report: Dict[str, Any] = {
+        "at": time.time(),
+        "loaded": dict(loaded.get("loaded", {})),
+        "recovered": dict(loaded.get("recovered", {})),
+        "errors": list(loaded.get("errors", [])),
+    }
+    config = _language_ingestor_config()
+    if not config.enabled:
+        report["corpus_ingestor"] = {"restored": False, "reason": "disabled"}
+    else:
+        try:
+            ingestor = _get_language_ingestor()
+            snap = ingestor.snapshot()
+            restored = bool(snap.get("checkpoint_exists")) and not str(snap.get("last_error") or "").startswith(
+                "Z3 corpus checkpoint restore failed"
+            )
+            report["corpus_ingestor"] = {
+                "restored": restored,
+                "trained_steps": snap.get("trained_steps"),
+                "buffer_size": snap.get("buffer_size"),
+                "optimizer_restore": snap.get("optimizer_restore"),
+                "health_state": snap.get("health_state"),
+                "checkpoint_path": ingestor.config.checkpoint_path,
+                "last_error": snap.get("last_error") or None,
+            }
+        except Exception as exc:
+            logger.exception("Corpus ingestor boot restore failed")
+            report["corpus_ingestor"] = {"restored": False, "reason": f"{type(exc).__name__}: {exc}"}
+    report["loaded"]["corpus_ingestor"] = bool(report["corpus_ingestor"].get("restored"))
+    _BOOT_RESTORE = report
 
 
 def get_model() -> Any:
@@ -386,10 +432,33 @@ def _get_optimizer(model: Any, learning_rate: float) -> Any:
     if _OPTIMIZER is None or _OPTIMIZER_MODEL_ID != id(model):
         _OPTIMIZER = torch.optim.AdamW(model.parameters(), lr=float(learning_rate))
         _OPTIMIZER_MODEL_ID = id(model)
+        # Register the decoder group at creation so the optimizer has the same
+        # shape on every boot; persisted Adam moments then restore fully.
+        _register_decoder_params(_OPTIMIZER, model, float(learning_rate))
     else:
         for group in _OPTIMIZER.param_groups:
             group["lr"] = float(learning_rate)
     return _OPTIMIZER
+
+
+def _register_decoder_params(optimizer: Any, model: Any, learning_rate: float) -> bool:
+    """Add language-decoder parameters to the shared optimizer exactly once."""
+    try:
+        cfg = model.config
+        dec = get_decoder(
+            input_dim=cfg.input_dim,
+            evidence_dim=cfg.evidence_dim,
+            state_dim=cfg.state_dim,
+            context_dim=cfg.context_dim,
+        )
+    except Exception as exc:
+        logger.debug("Decoder unavailable for optimizer registration: %s", exc)
+        return False
+    existing = {id(p) for group in optimizer.param_groups for p in group["params"]}
+    new_params = [p for p in dec.parameters() if id(p) not in existing]
+    if new_params:
+        optimizer.add_param_group({"params": new_params, "lr": float(learning_rate)})
+    return True
 
 
 def _tensor_from_vector(values: List[float], expected_dim: int) -> Any:
@@ -609,8 +678,12 @@ def _runtime_save() -> Dict[str, Any]:
 def _language_ingestor_config(*, batch_size: Optional[int] = None, learning_rate: Optional[float] = None) -> Z3CorpusIngestionConfig:
     """Build the canonical ingestor config from env plus live runtime overrides."""
     base = Z3CorpusIngestionConfig.from_env()
+    checkpoint_path = base.checkpoint_path
+    if not os.environ.get("Z3_CORPUS_CHECKPOINT_PATH"):
+        checkpoint_path = str(_STATE_STORE.corpus_ingestor_path)
     return replace(
         base,
+        checkpoint_path=checkpoint_path,
         batch_size=max(1, int(batch_size if batch_size is not None else _RUNTIME_LANGUAGE_CONFIG.get("batch_size", base.batch_size))),
         learning_rate=float(learning_rate if learning_rate is not None else _RUNTIME_LANGUAGE_CONFIG.get("learning_rate", base.learning_rate)),
         window_size=max(1, int(_RUNTIME_LANGUAGE_CONFIG.get("window_size", base.window_size))),
@@ -869,6 +942,7 @@ def runtime_status_payload() -> Dict[str, Any]:
     payload["language_stream"] = _LANGUAGE_STREAM.status()
     if _LANGUAGE_INGESTOR is not None:
         payload["language_ingestor"] = _LANGUAGE_INGESTOR.snapshot()
+    payload["boot_restore"] = dict(_BOOT_RESTORE)
     return payload
 
 
@@ -1131,12 +1205,7 @@ def train_language(request: TrainLanguageRequest) -> Dict[str, Any]:
             context_dim=cfg.context_dim,
         )
         optimizer = _get_optimizer(model, request.learning_rate)
-        # Add decoder parameters to the optimizer if not already present
-        dec_param_ids = {id(p) for p in dec.parameters()}
-        existing_ids = {id(p) for group in optimizer.param_groups for p in group['params']}
-        new_params = [p for p in dec.parameters() if id(p) not in existing_ids]
-        if new_params:
-            optimizer.add_param_group({'params': new_params, 'lr': request.learning_rate})
+        _register_decoder_params(optimizer, model, request.learning_rate)
         with _RUNTIME_LOCK:
             metrics = train_language_step(
                 model, dec, optimizer,
@@ -1400,7 +1469,9 @@ def infra_sync() -> Dict[str, Any]:
 
 @app.get("/state")
 def state_manifest() -> Dict[str, Any]:
-    return _STATE_STORE.manifest()
+    manifest = _STATE_STORE.manifest()
+    manifest["boot_restore"] = dict(_BOOT_RESTORE)
+    return manifest
 
 
 @app.post("/state/save")
