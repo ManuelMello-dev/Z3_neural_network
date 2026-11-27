@@ -814,7 +814,14 @@ def _ingest_curriculum_batch_for_runtime(*, batch_size: int, source: Optional[st
 
 
 def _runtime_tick() -> Dict[str, Any]:
-    """Run one autonomous heartbeat observation and optional Language learning update."""
+    """Run one heartbeat tick. The whole tick is serialised against API mutation:
+    world model, resonant memory and the Z3 core all hold deques/state that
+    /observe also writes."""
+    with _RUNTIME_LOCK:
+        return _runtime_tick_locked()
+
+
+def _runtime_tick_locked() -> Dict[str, Any]:
     global _RUNTIME_TICK_SEQUENCE
     _RUNTIME_TICK_SEQUENCE += 1
     runtime_tick_id = _RUNTIME_TICK_SEQUENCE
@@ -1289,8 +1296,9 @@ def world_model_state() -> Dict[str, Any]:
 @app.post("/world-model/observe")
 def world_model_observe(request: ObservationRequest) -> Dict[str, Any]:
     get_model()
-    output = _WORLD_MODEL.observe(request.observation, domain=request.domain)
-    response = {"world_model": output.to_dict(), "state": _WORLD_MODEL.get_state()}
+    with _RUNTIME_LOCK:
+        output = _WORLD_MODEL.observe(request.observation, domain=request.domain)
+        response = {"world_model": output.to_dict(), "state": _WORLD_MODEL.get_state()}
     manifest = _persist_if_requested(request.persist)
     if manifest:
         response["state_manifest"] = manifest
@@ -1309,8 +1317,9 @@ def memory_observe(request: ObservationRequest) -> Dict[str, Any]:
     phi, sigma = _current_phi_sigma(model)
     phi_hint = request.phi_hint if request.phi_hint is not None else phi
     sigma_hint = request.sigma_hint if request.sigma_hint is not None else sigma
-    output = _MEMORY.observe(request.observation, domain=request.domain, phi_hint=phi_hint, sigma_hint=sigma_hint)
-    response = {"memory": output, "snapshot": _MEMORY.get_snapshot(recent_ring_count=5)}
+    with _RUNTIME_LOCK:
+        output = _MEMORY.observe(request.observation, domain=request.domain, phi_hint=phi_hint, sigma_hint=sigma_hint)
+        response = {"memory": output, "snapshot": _MEMORY.get_snapshot(recent_ring_count=5)}
     manifest = _persist_if_requested(request.persist)
     if manifest:
         response["state_manifest"] = manifest
