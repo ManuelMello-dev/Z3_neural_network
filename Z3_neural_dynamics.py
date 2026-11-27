@@ -123,6 +123,11 @@ class Z3Config:
     beta_gate_rate: float = 0.03
     lateral_exchange_strength: float = 0.20
     beta_local_prediction: float = 0.15
+    # Global expected-evidence head must be trained toward observed evidence;
+    # without this term the novelty reward drove it to be maximally wrong.
+    beta_expected_prediction: float = 0.15
+    # Novelty reward is bounded: tanh(novelty / scale) on detached novelty.
+    useful_novelty_scale: float = 1.0
 
     @classmethod
     def predictive_runtime(cls, **overrides: Any) -> "Z3Config":
@@ -351,7 +356,12 @@ if torch is not None:
             local_expected = self.local_expected_evidence(local_expected_input)
             local_prediction_error = torch.norm(evidence - local_expected, dim=-1)
 
-            novelty = torch.norm(evidence - expected, dim=-1)
+            # The expected-evidence head is a predictor: it is trained only by
+            # expected_predictive. Downstream consumers of novelty (gates,
+            # useful-novelty reward, trust) must not be able to train it to be
+            # wrong, so novelty sees a detached prediction. Forward values are
+            # unchanged; evidence still receives novelty gradients.
+            novelty = torch.norm(evidence - expected.detach(), dim=-1)
             distance = torch.norm(z_next - target_agents, dim=-1)
             coherence = torch.exp(-cfg.lambda_coherence * distance)
             theta_novelty, theta_coherence, tau_novelty, tau_coherence = self.contextual_thresholds(context)
@@ -399,6 +409,7 @@ if torch is not None:
                 target=target_x,
                 evidence=evidence,
                 local_expected=local_expected,
+                expected=expected,
                 z3=z3,
                 z3_next=z3_next,
                 agents=agents,
@@ -496,6 +507,7 @@ if torch is not None:
             evidence: torch.Tensor,
             local_expected: torch.Tensor,
             z3: torch.Tensor,
+            expected: Optional[torch.Tensor] = None,
             z3_next: torch.Tensor,
             agents: torch.Tensor,
             z_next: torch.Tensor,
@@ -535,7 +547,11 @@ if torch is not None:
             ).pow(2)
             stability = torch.mean((z3_next - z3).pow(2))
             effort = torch.mean((z_next - agents).pow(2)) + 0.1 * torch.mean(update_vector.pow(2)) + 0.05 * torch.mean(physics_force.pow(2))
-            useful_novelty = torch.mean(exploratory_gate * coherence.clamp_min(cfg.coherence_floor) * novelty)
+            # Reward gating/coherence for engaging with novelty, but never let the
+            # predictor or the evidence encoder manufacture novelty: novelty is
+            # detached and squashed so the reward is bounded in [0, 1).
+            bounded_novelty = torch.tanh(novelty.detach() / max(cfg.useful_novelty_scale, cfg.epsilon))
+            useful_novelty = torch.mean(exploratory_gate * coherence.clamp_min(cfg.coherence_floor) * bounded_novelty)
             residual_activity = torch.norm(residual_delta, dim=-1).mean() + novelty_pressure.mean()
             phi_weights = self.phi / self.phi.sum().clamp_min(cfg.epsilon)
             phi_concentration = torch.sum(phi_weights.pow(2))
@@ -565,9 +581,14 @@ if torch is not None:
             )
             threshold_variance = theta_novelty_eff.var(unbiased=False) + theta_coherence_eff.var(unbiased=False)
             local_predictive = F.mse_loss(local_expected, evidence.detach())
+            if expected is not None:
+                expected_predictive = F.mse_loss(expected, evidence.detach())
+            else:
+                expected_predictive = evidence.new_zeros(())
             total = (
                 cfg.beta_predictive * predictive
                 + cfg.beta_local_prediction * local_predictive
+                + cfg.beta_expected_prediction * expected_predictive
                 + cfg.beta_coherence_band * coherence_band
                 + cfg.beta_diversity * diversity
                 + cfg.beta_evidence_variance * evidence_variance
@@ -583,6 +604,7 @@ if torch is not None:
                 "total": total,
                 "predictive": predictive,
                 "local_predictive": local_predictive,
+                "expected_predictive": expected_predictive,
                 "coherence_band": coherence_band,
                 "diversity": diversity,
                 "evidence_variance": evidence_variance,
