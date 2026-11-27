@@ -234,6 +234,21 @@ for step in range(400):
 tail_novelty = sum(nov_trace[-100:]) / 100.0
 check("Novelty stays bounded under training", tail_novelty < 25.0 and all(v == v for v in nov_trace), {"tail_mean": tail_novelty, "max": max(nov_trace)})
 
+# Gate saturation: with the original beta_gate_rate=0.03 the squared-hinge band
+# penalty was ~5e-4 at gate 0.98, so mean_gate sat at ~0.97 against a 0.85 ceiling.
+torch.manual_seed(0)
+gate_model = Z3NeuralDynamics()
+gate_opt = torch.optim.AdamW(gate_model.parameters(), lr=1e-3)
+gate_xs, gate_ys = generate_regime_sequence(600, gate_model.config.input_dim, batch_size=4)
+gate_trace, gate_pred = [], []
+for step in range(600):
+    gate_metrics = gate_model.train_step(gate_opt, gate_xs[step], target=gate_ys[step])
+    gate_trace.append(float(gate_metrics["mean_gate"]))
+    gate_pred.append(float(gate_metrics["predictive"]))
+tail_gate = sum(gate_trace[-150:]) / 150.0
+tail_pred = sum(gate_pred[-150:]) / 150.0
+check("Gate rate is pulled toward its band (not saturated near 1.0)", tail_gate < 0.92, tail_gate)
+check("Gate regulation does not cost prediction quality", tail_pred < 0.01 and tail_pred == tail_pred, tail_pred)
 print("=" * 60)
 print(f"PASS={PASS} FAIL={FAIL} SKIP={SKIP}")
 raise SystemExit(1 if FAIL else 0)

@@ -120,7 +120,7 @@ class Z3Config:
     beta_phi_balance: float = 0.05
     beta_boot_context: float = 0.05
     beta_boot_variance: float = 0.05
-    beta_gate_rate: float = 0.03
+    beta_gate_rate: float = 1.0  # was 0.03: squared-hinge band penalty was ~5e-4 at gate 0.98, too weak to act
     lateral_exchange_strength: float = 0.20
     beta_local_prediction: float = 0.15
     # Global expected-evidence head must be trained toward observed evidence;
