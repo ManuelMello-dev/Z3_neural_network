@@ -147,6 +147,23 @@ with TestClient(main.app) as client:
     stop.set()
     worker.join(timeout=30)
     check("Concurrent heartbeat and API mutations raise no errors", not errors, errors[:3])
+
+    # Deterministic guard for the race above: the tick must own the lock while
+    # it touches the world model and resonant memory (deques also written by /observe).
+    owned = {}
+    orig_w, orig_m = main._WORLD_MODEL.observe, main._MEMORY.observe
+    def w(*aa, **kk):
+        owned["world"] = main._RUNTIME_LOCK._is_owned(); return orig_w(*aa, **kk)
+    def m(*aa, **kk):
+        owned["memory"] = main._RUNTIME_LOCK._is_owned(); return orig_m(*aa, **kk)
+    main._WORLD_MODEL.observe, main._MEMORY.observe = w, m
+    try:
+        main._runtime_tick()
+        client.post("/world-model/observe", json={"observation": {"v": 1.0}, "domain": "t", "persist": False})
+        client.post("/memory/observe", json={"observation": {"v": 1.0}, "domain": "t", "persist": False})
+    finally:
+        main._WORLD_MODEL.observe, main._MEMORY.observe = orig_w, orig_m
+    check("Heartbeat tick and standalone observe endpoints hold the runtime lock", owned.get("world") is True and owned.get("memory") is True, owned)
     check("All concurrent API calls succeed", all(s == 200 for s in statuses), statuses)
     finite = all(bool(torch.isfinite(p).all()) for p in main.get_model().parameters())
     check("Model parameters remain finite after concurrent training", finite)

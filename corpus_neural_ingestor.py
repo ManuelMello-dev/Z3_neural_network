@@ -193,6 +193,9 @@ class Z3CorpusNeuralIngestor:
         self._last_checkpoint_time = 0.0
         self._last_checkpoint_version = 0
         self._last_checkpoint_recovered_from = ""
+        # Outcome of the most recent optimizer-state restore: "none", "full",
+        # "partial:<restored>/<saved> groups" or "skipped:<reason>".
+        self._optimizer_restore = "none"
         self._last_batch_size = 0
         self._last_provenance: List[Dict[str, Any]] = []
         self._recent_hashes: Deque[str] = deque(maxlen=max(1, self.config.recent_hashes_limit))
@@ -685,7 +688,55 @@ class Z3CorpusNeuralIngestor:
             if payload.get("last_model_metrics") is not None:
                 self.model.last_metrics = payload["last_model_metrics"].to(next(self.model.parameters()).device)
         if self.optimizer is not None and payload.get("optimizer_state_dict") is not None:
-            self.optimizer.load_state_dict(payload["optimizer_state_dict"])
+            status = self._restore_optimizer_state(payload["optimizer_state_dict"])
+            with self._lock:
+                self._optimizer_restore = status
+                if status.startswith("skipped") or status.startswith("partial"):
+                    self._last_warning = f"optimizer_restore_{status}"
+
+    def _restore_optimizer_state(self, saved: Dict[str, Any]) -> str:
+        """Restore optimizer moments without ever treating a shape change as corruption.
+
+        The shared runtime optimizer can legitimately change shape between runs
+        (e.g. a language-decoder param group registered after the checkpoint
+        was written). A mismatch must not quarantine an otherwise valid ingestor
+        checkpoint: restore the leading param groups whose sizes match and keep
+        fresh state for the rest.
+        """
+        optimizer = self.optimizer
+        try:
+            optimizer.load_state_dict(saved)
+            return "full"
+        except (ValueError, KeyError, RuntimeError):
+            pass
+        try:
+            current = optimizer.state_dict()
+            saved_groups = list(saved.get("param_groups") or [])
+            current_groups = list(current.get("param_groups") or [])
+            matched = 0
+            for saved_group, current_group in zip(saved_groups, current_groups):
+                if len(saved_group.get("params", [])) != len(current_group.get("params", [])):
+                    break
+                matched += 1
+            if matched == 0:
+                return f"skipped:no_matching_groups(saved={len(saved_groups)},current={len(current_groups)})"
+            restored_ids = {pid for group in saved_groups[:matched] for pid in group["params"]}
+            merged_state = {pid: st for pid, st in dict(saved.get("state") or {}).items() if pid in restored_ids}
+            kept_ids = {pid for group in current_groups[matched:] for pid in group["params"]}
+            merged_state.update({pid: st for pid, st in dict(current.get("state") or {}).items() if pid in kept_ids})
+            merged = {"state": merged_state, "param_groups": saved_groups[:matched] + current_groups[matched:]}
+            optimizer.load_state_dict(merged)
+            # Shape checks: every restored moment must match its parameter.
+            params = [p for group in optimizer.param_groups for p in group["params"]]
+            for param in params:
+                st = optimizer.state.get(param) or {}
+                for key in ("exp_avg", "exp_avg_sq"):
+                    if key in st and tuple(st[key].shape) != tuple(param.shape):
+                        optimizer.load_state_dict(current)
+                        return "skipped:moment_shape_mismatch"
+            return f"partial:{matched}/{len(saved_groups)} groups"
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"skipped:{type(exc).__name__}"
 
     def _quarantine_checkpoint(self, path: Path) -> None:
         try:
@@ -724,6 +775,7 @@ class Z3CorpusNeuralIngestor:
                 "available": self.config.enabled and self._trainer is not None and model is not None and optimizer is not None,
                 "health_state": self.health_state(),
                 "own_model": self._own_model,
+                "optimizer_restore": self._optimizer_restore,
                 "buffer_size": len(self._buffer),
                 "buffer_capacity": self.config.max_buffer_texts,
                 "backlog_ratio": round(len(self._buffer) / max(1, self.config.max_buffer_texts), 6),
